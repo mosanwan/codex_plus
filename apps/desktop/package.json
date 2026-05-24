@@ -1,0 +1,31 @@
+{
+  "name": "@codep/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "dev:vite": "vite --host 127.0.0.1",
+    "dev:electron": "tsc -p tsconfig.electron.json && electron .",
+    "dev:electron:no-sandbox": "tsc -p tsconfig.electron.json && electron --no-sandbox .",
+    "start": "electron .",
+    "start:no-sandbox": "electron --no-sandbox ."
+  },
+  "dependencies": {
+    "@codep/codex-adapter": "0.1.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^39.2.4",
+    "lucide-react": "^0.555.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^7.2.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3"
+  }
+}
