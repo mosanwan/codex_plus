@@ -1,5 +1,7 @@
-export type ViewMode = "chat" | "approvals" | "diff";
+export type ViewMode = "sessions" | "chat" | "settings";
 export type ConnectionState = "online" | "pairing" | "offline";
+export type PermissionMode = "default" | "auto-review" | "full-access";
+export type ModelEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface Device {
   id: string;
@@ -16,11 +18,26 @@ export interface Session {
   status: "ready" | "working" | "approval";
 }
 
+export interface Workspace {
+  path: string;
+  name: string;
+  sessions: Session[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "codex" | "event";
   text: string;
   meta?: string;
+  attachments?: MessageAttachment[];
+}
+
+export interface MessageAttachment {
+  id: string;
+  kind: "image";
+  name: string;
+  mimeType: string;
+  dataUrl: string;
 }
 
 export interface Approval {
@@ -32,11 +49,20 @@ export interface Approval {
 
 export interface RemoteSnapshot {
   device: Device;
+  workspaces: Workspace[];
+  activeWorkspace: string | null;
   sessions: Session[];
   activeSessionId: string;
   messages: Message[];
   approvals: Approval[];
   diffLines: string[];
+  permissionMode: PermissionMode;
+  model: string;
+  modelEffort: ModelEffort;
+  contextUsage: {
+    usedTokens: number;
+    contextWindow: number | null;
+  } | null;
 }
 
 export interface RemoteClient {
@@ -54,6 +80,39 @@ export const mockSnapshot: RemoteSnapshot = {
     connection: "online",
     lastSeen: "Now"
   },
+  workspaces: [
+    {
+      path: "/home/three/workspace/codep",
+      name: "codep",
+      sessions: [
+        {
+          id: "019e54af",
+          title: "Android App 版开发",
+          updatedAt: "02:30",
+          status: "working"
+        },
+        {
+          id: "019e49fe",
+          title: "fal_generate 支持模型",
+          updatedAt: "Yesterday",
+          status: "ready"
+        }
+      ]
+    },
+    {
+      path: "/home/three/workspace/test_codexp",
+      name: "test_codexp",
+      sessions: [
+        {
+          id: "019e44b1",
+          title: "远程控制方案",
+          updatedAt: "May 21",
+          status: "approval"
+        }
+      ]
+    }
+  ],
+  activeWorkspace: "/home/three/workspace/codep",
   sessions: [
     {
       id: "019e54af",
@@ -125,5 +184,12 @@ export const mockSnapshot: RemoteSnapshot = {
     "+  return <main>CodeP Mobile</main>;",
     "+}",
     "-// mobile shell pending"
-  ]
+  ],
+  permissionMode: "default",
+  model: "gpt-5.5",
+  modelEffort: "high",
+  contextUsage: {
+    usedTokens: 38912,
+    contextWindow: 256000
+  }
 };

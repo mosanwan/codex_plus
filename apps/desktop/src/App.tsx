@@ -1,14 +1,32 @@
 import {
+  ArrowUp,
+  AtSign,
+  ChevronRight,
   Check,
   FolderOpen,
+  Languages,
+  MoreHorizontal,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
-  Send,
+  Pencil,
+  Plus,
+  Settings,
+  Square,
+  Star,
+  Sun,
+  Trash2,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardEvent, KeyboardEvent, ReactNode } from "react";
+import type {
+  ClipboardEvent,
+  CSSProperties,
+  FormEvent,
+  KeyboardEvent,
+  ReactNode
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
@@ -64,11 +82,509 @@ interface ClipboardAttachmentResult {
   formats: string[];
 }
 
+interface RemoteAttachmentInput {
+  kind: "image";
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
+interface ComposerSuggestion {
+  id: string;
+  type: "file" | "skill";
+  label: string;
+  name: string;
+  detail?: string;
+  insertText: string;
+  path?: string;
+}
+
+interface NotificationSoundFile {
+  path: string;
+  url: string;
+  name: string;
+}
+
 type ConnectionState = "disconnected" | "connecting" | "connected";
+type RelayConnectionState = "disabled" | "connecting" | "connected" | "error";
+type PermissionMode = "default" | "auto-review" | "full-access";
+type ThemeMode = "dark" | "light";
+type ModelEffort = "low" | "medium" | "high" | "xhigh";
+type ComposerCompletionMode = "file" | "skill";
+type UILanguage = "en" | "zh-CN";
+
+interface ComposerCompletionState {
+  mode: ComposerCompletionMode;
+  query: string;
+  tokenStart: number;
+  cursor: number;
+  items: ComposerSuggestion[];
+  selectedIndex: number;
+  loading: boolean;
+}
+
+interface ContextUsage {
+  usedTokens: number;
+  contextWindow: number | null;
+}
+
+interface RateLimitWindowUsage {
+  leftPercent: number | null;
+}
+
+interface RateLimitUsage {
+  primary: RateLimitWindowUsage | null;
+  secondary: RateLimitWindowUsage | null;
+}
+
+interface ModelOption {
+  id: string;
+  label: string;
+}
+
+interface RelayEnvelope {
+  type: string;
+  payload?: unknown;
+}
+
+interface RemoteCommandEnvelope {
+  type: string;
+  payload?: {
+    workspace?: string;
+    sessionId?: string;
+    title?: string;
+    text?: string;
+    attachments?: RemoteAttachmentInput[];
+    permissionMode?: PermissionMode;
+    model?: string;
+    effort?: ModelEffort;
+    requestId?: string | number;
+    decision?: "accept" | "decline" | "cancel";
+  };
+}
+
+interface RemoteSnapshotMessage {
+  id: string;
+  role: "user" | "codex" | "event";
+  text: string;
+  meta?: string;
+}
+
+interface RemoteSnapshotWorkspace {
+  path: string;
+  name: string;
+  sessions: Array<{
+    id: string;
+    title: string;
+    updatedAt: string;
+    status: string;
+  }>;
+}
+
 const WORKSPACE_STORAGE_KEY = "codep.lastWorkspace";
+const WORKSPACES_STORAGE_KEY = "codep.workspaces";
 const SESSION_STORAGE_KEY = "codep.sessionsByWorkspace";
+const SESSION_TITLE_OVERRIDES_STORAGE_KEY = "codep.sessionTitleOverrides";
+const SESSION_ICON_OVERRIDES_STORAGE_KEY = "codep.sessionIconOverrides";
+const FAVORITE_SESSIONS_STORAGE_KEY = "codep.favoriteSessions";
+const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.collapsedWorkspaces";
+const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
+const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
+const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
+const PERMISSIONS_STORAGE_KEY = "codep.defaultPermissions";
+const THEME_STORAGE_KEY = "codep.theme";
+const LANGUAGE_STORAGE_KEY = "codep.language";
+const MODEL_STORAGE_KEY = "codep.model";
+const MODEL_EFFORT_STORAGE_KEY = "codep.modelEffort";
+const UNREAD_SESSIONS_STORAGE_KEY = "codep.unreadSessions";
+const SOUND_NOTIFICATIONS_STORAGE_KEY = "codep.soundNotifications";
+const NOTIFICATION_SOUND_FILE_STORAGE_KEY = "codep.notificationSoundFile";
 const INITIAL_VISIBLE_TRANSCRIPT_COUNT = 40;
 const TRANSCRIPT_PAGE_SIZE = 40;
+type SidebarTab = "all" | "favorites";
+const LANGUAGE_OPTIONS: Array<{ value: UILanguage; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en", label: "English" }
+];
+const UI_TEXT = {
+  en: {
+    localWorkspace: "Local Codex workspace",
+    expandSidebar: "Expand sidebar",
+    collapseSidebar: "Collapse sidebar",
+    favoriteSessions: "Favorite sessions",
+    openSession: "Open",
+    sessions: "Sessions",
+    latest: "Latest",
+    new: "New",
+    addWorkspace: "Add workspace",
+    sessionViews: "Session views",
+    all: "All",
+    favorites: "Favorites",
+    loadingSessions: "Loading sessions...",
+    noSessionsLoaded: "No sessions loaded",
+    favoriteEmpty: "Star sessions you want to keep close. Favorites appear here.",
+    workspaceEmpty: "Add one or more workspaces, then open a session under any of them.",
+    conversation: "Conversation",
+    newCodexSession: "New Codex session",
+    openSettings: "Open settings",
+    startSessionTitle: "Start a local Codex session",
+    startSessionBody: "Add workspaces on the left, then open or create a session under any workspace.",
+    loadingSessionTitle: "Loading session",
+    loadingSessionBody: "Resuming Codex history for this workspace.",
+    loadOlderMessages: "Load {count} older messages",
+    hiddenMessages: "{count} hidden",
+    working: "Working",
+    ready: "Ready",
+    noSession: "No session",
+    attachedFiles: "Attached files",
+    image: "Image",
+    fileMention: "File mention",
+    messageCodex: "Message Codex",
+    composerPlaceholder: "Ask Codex to inspect, edit, explain, or test this workspace",
+    attachFile: "Attach file",
+    searchFiles: "Search files",
+    searchSkills: "Search skills",
+    files: "Files",
+    skills: "Skills",
+    switchModel: "Switch model",
+    model: "Model",
+    switchEffort: "Switch reasoning effort",
+    reasoningEffort: "Reasoning effort",
+    switchPermissions: "Switch permissions",
+    permissions: "Permissions",
+    stopTurn: "Stop current turn",
+    sendMessage: "Send message",
+    workspaceActions: "Workspace actions for {name}",
+    newSession: "New session",
+    removeWorkspace: "Remove workspace",
+    noMatchingFiles: "No matching files",
+    noMatchingSkills: "No matching skills",
+    searching: "Searching...",
+    accept: "Accept",
+    decline: "Decline",
+    account: "Account",
+    fiveHourLimit: "5h limit",
+    weeklyLimit: "Weekly limit",
+    rateLimitUnknown: "Not reported",
+    quickTheme: "Quick theme",
+    quickLanguage: "Quick language",
+    settings: "Settings",
+    settingsIntro: "Configure remote access for desktop and mobile clients.",
+    closeSettings: "Close settings",
+    appearance: "Appearance",
+    appearanceIntro: "Choose the theme and language for desktop UI surfaces.",
+    theme: "Theme",
+    language: "Language",
+    dark: "Dark",
+    light: "Light",
+    notifications: "Notifications",
+    notificationsIntro: "Show session unread dots when a turn completes away from the active view. Sound can also play on every completed turn.",
+    soundOnTurnCompletion: "Sound on turn completion",
+    soundOnTurnCompletionHelp: "Play a short sound when Codex finishes a turn.",
+    audioFile: "Audio file",
+    defaultTone: "Default tone",
+    chooseFile: "Choose file",
+    clear: "Clear",
+    modelIntro: "Choose the model and reasoning level used for new, resumed, and next turns.",
+    reasoningLevel: "Reasoning level",
+    permissionsIntro: "Choose the default approval behavior for new, resumed, and next turns. The quick selector under the composer changes the same value.",
+    defaultPermissions: "Default /permissions",
+    relay: "Relay",
+    relayIntro: "Use the same endpoint and API key on the mobile app. The key is saved locally on this desktop.",
+    endpoint: "Endpoint",
+    apiKey: "API key",
+    status: "Status",
+    relayConnected: "Relay is connected and ready for mobile clients.",
+    relayConnecting: "Relay credentials are configured. Connecting...",
+    relayMissing: "Create an API key on the relay server, then paste it here and in the mobile app.",
+    notSet: "Not set",
+    deviceId: "Device ID",
+    desktopUrl: "Desktop URL",
+    notReady: "Not ready",
+    saved: "Saved",
+    missing: "Missing",
+    connection: "Connection",
+    defaultPermissionLabel: "Default",
+    defaultPermissionDescription: "Codex can read and edit files in the current workspace, and run commands. Approval is required for internet access or edits outside the workspace.",
+    autoReviewPermissionLabel: "Auto-review",
+    autoReviewPermissionDescription: "Same workspace-write permissions as Default, but eligible approvals are routed through the auto-reviewer subagent.",
+    fullAccessPermissionLabel: "Full Access",
+    fullAccessPermissionDescription: "Codex can edit files outside this workspace and access the internet without asking for approval.",
+    effortLowLabel: "Fast",
+    effortLowDescription: "Lowest reasoning latency.",
+    effortMediumLabel: "Medium",
+    effortMediumDescription: "Balanced speed and depth.",
+    effortHighLabel: "High",
+    effortHighDescription: "Deeper reasoning for harder tasks.",
+    effortXHighLabel: "XHigh",
+    effortXHighDescription: "Maximum reasoning depth.",
+    contextUnknown: "Unknown",
+    contextLeft: "{value} left",
+    contextUsed: "{value} used",
+    contextUnknownTooltip: "Context usage has not been reported yet.",
+    contextRemainingTooltip: "{remaining} remaining of {total} ({percent}%)",
+    contextUsedTooltip: "{value} tokens used.",
+    roleCodex: "Codex",
+    roleYou: "You",
+    roleSystem: "System",
+    roleTurn: "Turn",
+    roleRan: "Ran",
+    roleOutput: "Output",
+    roleTool: "Tool",
+    roleEdited: "Edited",
+    roleViewedImage: "Viewed Image",
+    roleInteracted: "Interacted",
+    roleSearch: "Search",
+    rolePlan: "Plan",
+    roleDiff: "Diff",
+    roleApproval: "Approval",
+    sessionName: "Session name",
+    saveSessionName: "Save session name",
+    cancelRename: "Cancel rename",
+    unreadTurn: "Unread turn",
+    favoriteSession: "Favorite {title}",
+    unfavoriteSession: "Unfavorite {title}",
+    renameSession: "Rename {title}",
+    changeIcon: "Change icon for {title}",
+    useIcon: "Use {icon} icon"
+  },
+  "zh-CN": {
+    localWorkspace: "本地 Codex 工作区",
+    expandSidebar: "展开侧边栏",
+    collapseSidebar: "折叠侧边栏",
+    favoriteSessions: "收藏 Session",
+    openSession: "打开",
+    sessions: "Sessions",
+    latest: "最新",
+    new: "新建",
+    addWorkspace: "添加工作区",
+    sessionViews: "Session 视图",
+    all: "全部",
+    favorites: "收藏",
+    loadingSessions: "正在加载 Session...",
+    noSessionsLoaded: "还没有加载 Session",
+    favoriteEmpty: "收藏常用 Session 后，会显示在这里。",
+    workspaceEmpty: "先添加一个或多个工作区，然后打开或创建 Session。",
+    conversation: "对话",
+    newCodexSession: "新的 Codex Session",
+    openSettings: "打开设置",
+    startSessionTitle: "开始本地 Codex Session",
+    startSessionBody: "在左侧添加工作区，然后打开或创建该工作区下的 Session。",
+    loadingSessionTitle: "正在加载 Session",
+    loadingSessionBody: "正在恢复这个工作区的 Codex 历史。",
+    loadOlderMessages: "加载更早的 {count} 条消息",
+    hiddenMessages: "已隐藏 {count} 条",
+    working: "Working",
+    ready: "Ready",
+    noSession: "无 Session",
+    attachedFiles: "已附加文件",
+    image: "图片",
+    fileMention: "文件引用",
+    messageCodex: "给 Codex 发消息",
+    composerPlaceholder: "让 Codex 检查、修改、解释或测试这个工作区",
+    attachFile: "附加文件",
+    searchFiles: "搜索文件",
+    searchSkills: "搜索技能",
+    files: "文件",
+    skills: "技能",
+    switchModel: "切换模型",
+    model: "模型",
+    switchEffort: "切换推理强度",
+    reasoningEffort: "推理强度",
+    switchPermissions: "切换权限",
+    permissions: "权限",
+    stopTurn: "停止当前 Turn",
+    sendMessage: "发送消息",
+    workspaceActions: "{name} 的工作区操作",
+    newSession: "新建 Session",
+    removeWorkspace: "移除工作区",
+    noMatchingFiles: "没有匹配的文件",
+    noMatchingSkills: "没有匹配的技能",
+    searching: "搜索中...",
+    accept: "允许",
+    decline: "拒绝",
+    account: "账号",
+    fiveHourLimit: "5h limit",
+    weeklyLimit: "Weekly limit",
+    rateLimitUnknown: "暂无额度",
+    quickTheme: "快速切换主题",
+    quickLanguage: "快速切换语言",
+    settings: "设置",
+    settingsIntro: "配置桌面端和移动端的远程访问。",
+    closeSettings: "关闭设置",
+    appearance: "外观",
+    appearanceIntro: "选择桌面端界面的主题和语言。",
+    theme: "主题",
+    language: "语言",
+    dark: "深色",
+    light: "浅色",
+    notifications: "提醒",
+    notificationsIntro: "当 Turn 在非当前视图完成时显示 Session 未读红点，也可以播放提示音。",
+    soundOnTurnCompletion: "Turn 结束提示音",
+    soundOnTurnCompletionHelp: "Codex 完成一个 Turn 后播放短提示音。",
+    audioFile: "音频文件",
+    defaultTone: "默认提示音",
+    chooseFile: "选择文件",
+    clear: "清除",
+    modelIntro: "选择新建、恢复以及下一次 Turn 使用的模型和推理强度。",
+    reasoningLevel: "推理强度",
+    permissionsIntro: "选择新建、恢复以及下一次 Turn 的默认审批行为。输入框下方的快捷选择也会修改同一个值。",
+    defaultPermissions: "默认 /permissions",
+    relay: "中转服务",
+    relayIntro: "移动端使用相同的 endpoint 和 API key。密钥只保存在这台桌面端本地。",
+    endpoint: "Endpoint",
+    apiKey: "API key",
+    status: "状态",
+    relayConnected: "中转服务已连接，可以供移动端使用。",
+    relayConnecting: "中转凭据已配置，正在连接...",
+    relayMissing: "先在中转服务创建 API key，然后粘贴到桌面端和移动端。",
+    notSet: "未设置",
+    deviceId: "设备 ID",
+    desktopUrl: "桌面端 URL",
+    notReady: "未就绪",
+    saved: "已保存",
+    missing: "缺失",
+    connection: "连接",
+    defaultPermissionLabel: "Default",
+    defaultPermissionDescription: "Codex 可以读取和编辑当前工作区内的文件，并运行命令。访问互联网或编辑工作区外文件时需要审批。",
+    autoReviewPermissionLabel: "Auto-review",
+    autoReviewPermissionDescription: "与 Default 拥有相同的工作区写入权限，但符合条件的审批会交给 auto-reviewer 子 Agent。",
+    fullAccessPermissionLabel: "Full Access",
+    fullAccessPermissionDescription: "Codex 可以编辑工作区外文件并访问互联网，不再请求审批。请谨慎使用。",
+    effortLowLabel: "Fast",
+    effortLowDescription: "最低推理延迟。",
+    effortMediumLabel: "Medium",
+    effortMediumDescription: "在速度和深度之间平衡。",
+    effortHighLabel: "High",
+    effortHighDescription: "更深入的推理，适合复杂任务。",
+    effortXHighLabel: "XHigh",
+    effortXHighDescription: "最高推理深度。",
+    contextUnknown: "Unknown",
+    contextLeft: "剩余 {value}",
+    contextUsed: "已用 {value}",
+    contextUnknownTooltip: "暂未收到上下文用量。",
+    contextRemainingTooltip: "剩余 {remaining} / {total} ({percent}%)",
+    contextUsedTooltip: "已使用 {value} tokens。",
+    roleCodex: "Codex",
+    roleYou: "你",
+    roleSystem: "System",
+    roleTurn: "Turn",
+    roleRan: "Ran",
+    roleOutput: "Output",
+    roleTool: "Tool",
+    roleEdited: "Edited",
+    roleViewedImage: "Viewed Image",
+    roleInteracted: "Interacted",
+    roleSearch: "Search",
+    rolePlan: "Plan",
+    roleDiff: "Diff",
+    roleApproval: "Approval",
+    sessionName: "Session 名称",
+    saveSessionName: "保存 Session 名称",
+    cancelRename: "取消重命名",
+    unreadTurn: "未读 Turn",
+    favoriteSession: "收藏 {title}",
+    unfavoriteSession: "取消收藏 {title}",
+    renameSession: "重命名 {title}",
+    changeIcon: "修改 {title} 的图标",
+    useIcon: "使用 {icon} 图标"
+  }
+} as const;
+type UIMessageKey = keyof typeof UI_TEXT.en;
+
+function textFor(
+  language: UILanguage,
+  key: UIMessageKey,
+  values: Record<string, string | number> = {}
+): string {
+  return Object.entries(values).reduce(
+    (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+    String(UI_TEXT[language][key] ?? UI_TEXT.en[key])
+  );
+}
+const PERMISSION_OPTIONS: Array<{
+  value: PermissionMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "default",
+    label: "Default",
+    description:
+      "Codex can read and edit files in the current workspace, and run commands. Approval is required for internet access or edits outside the workspace."
+  },
+  {
+    value: "auto-review",
+    label: "Auto-review",
+    description:
+      "Same workspace-write permissions as Default, but eligible approvals are routed through the auto-reviewer subagent."
+  },
+  {
+    value: "full-access",
+    label: "Full Access",
+    description:
+      "Codex can edit files outside this workspace and access the internet without asking for approval."
+  }
+];
+const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
+  { id: "gpt-5.5", label: "GPT-5.5" },
+  { id: "gpt-5", label: "GPT-5" },
+  { id: "gpt-5-codex", label: "GPT-5 Codex" },
+  { id: "o3", label: "o3" }
+];
+const EFFORT_OPTIONS: Array<{
+  value: ModelEffort;
+  label: string;
+  description: string;
+}> = [
+  { value: "low", label: "Fast", description: "Lowest reasoning latency." },
+  { value: "medium", label: "Medium", description: "Balanced speed and depth." },
+  { value: "high", label: "High", description: "Deeper reasoning for harder tasks." },
+  { value: "xhigh", label: "XHigh", description: "Maximum reasoning depth." }
+];
+const SESSION_ICON_IDS = [
+  "terminal",
+  "code",
+  "branch",
+  "bug",
+  "rocket",
+  "database",
+  "globe",
+  "palette",
+  "shield",
+  "test",
+  "doc",
+  "bot",
+  "spark",
+  "compass",
+  "cube",
+  "graph",
+  "bolt",
+  "key",
+  "cloud",
+  "chip",
+  "package",
+  "workflow",
+  "search",
+  "wrench",
+  "flag",
+  "book",
+  "clock",
+  "pin",
+  "layers",
+  "atom",
+  "eye",
+  "flame",
+  "wave",
+  "gem",
+  "target",
+  "beaker",
+  "satellite",
+  "lock",
+  "brush",
+  "grid"
+] as const;
+type SessionIconId = (typeof SESSION_ICON_IDS)[number];
 const DEMO_MODE =
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
 const DEMO_WORKSPACE = "/home/three/workspace/test_codexp";
@@ -124,14 +640,38 @@ export function App() {
   const desktopApi = window.codexApp;
   const [connectionState, setConnectionState] =
     useState<ConnectionState>(DEMO_MODE ? "connected" : "disconnected");
+  const [workspaces, setWorkspaces] = useState<string[]>(() =>
+    DEMO_MODE ? [DEMO_WORKSPACE] : readSavedWorkspaces()
+  );
   const [workspace, setWorkspace] = useState<string | null>(() =>
-    DEMO_MODE ? DEMO_WORKSPACE : window.localStorage.getItem(WORKSPACE_STORAGE_KEY)
+    DEMO_MODE
+      ? DEMO_WORKSPACE
+      : window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ??
+        readSavedWorkspaces()[0] ??
+        null
   );
   const [session, setSession] = useState<SessionView | null>(
     DEMO_MODE ? DEMO_SESSION : null
   );
-  const [sessions, setSessions] = useState<SessionView[]>(
-    DEMO_MODE ? [DEMO_SESSION] : []
+  const [workspaceSessions, setWorkspaceSessions] = useState<
+    Record<string, SessionView[]>
+  >(
+    DEMO_MODE ? { [DEMO_WORKSPACE]: [DEMO_SESSION] } : {}
+  );
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>(() =>
+    readStringList(FAVORITE_SESSIONS_STORAGE_KEY).length > 0 ? "favorites" : "all"
+  );
+  const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
+    () => new Set(readStringList(FAVORITE_SESSIONS_STORAGE_KEY))
+  );
+  const [sessionIconOverrides, setSessionIconOverrides] = useState<Record<string, string>>(
+    () => readStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY)
+  );
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(
+    () => new Set(readStringList(UNREAD_SESSIONS_STORAGE_KEY))
+  );
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(
+    () => new Set(readStringList(COLLAPSED_WORKSPACES_STORAGE_KEY))
   );
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const [isSessionOpening, setIsSessionOpening] = useState(false);
@@ -140,24 +680,178 @@ export function App() {
   );
   const [approvals, setApprovals] = useState<ApprovalEntry[]>([]);
   const [composer, setComposer] = useState("");
+  const [composerCompletion, setComposerCompletion] =
+    useState<ComposerCompletionState | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [runningTurnsBySession, setRunningTurnsBySession] = useState<
+    Record<string, string>
+  >({});
+  const [turnStartedAtBySession, setTurnStartedAtBySession] = useState<
+    Record<string, number>
+  >({});
+  const [lastTurnDurationBySession, setLastTurnDurationBySession] = useState<
+    Record<string, number>
+  >({});
+  const [timerNow, setTimerNow] = useState(() => Date.now());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [relayEndpoint, setRelayEndpoint] = useState(
+    () => window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY) ?? "ws://127.0.0.1:8787"
+  );
+  const [relayApiKey, setRelayApiKey] = useState(
+    () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
+  );
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() =>
+    readSavedPermissionMode()
+  );
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readSavedThemeMode());
+  const [language, setLanguage] = useState<UILanguage>(() => readSavedLanguage());
+  const [model, setModel] = useState(() => readSavedModel());
+  const [modelEffort, setModelEffort] = useState<ModelEffort>(() =>
+    readSavedModelEffort()
+  );
+  const [soundNotificationsEnabled, setSoundNotificationsEnabled] = useState(
+    () => window.localStorage.getItem(SOUND_NOTIFICATIONS_STORAGE_KEY) === "true"
+  );
+  const [notificationSoundFile, setNotificationSoundFile] =
+    useState<NotificationSoundFile | null>(() => readSavedNotificationSoundFile());
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODEL_OPTIONS);
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  const [rateLimitUsage, setRateLimitUsage] = useState<RateLimitUsage | null>(null);
+  const [relayState, setRelayState] = useState<RelayConnectionState>("disabled");
+  const [relayError, setRelayError] = useState("");
+  const [deviceId] = useState(() => storedDeviceId());
   const [visibleTranscriptCount, setVisibleTranscriptCount] = useState(
     INITIAL_VISIBLE_TRANSCRIPT_COUNT
   );
   const [scrollRequest, setScrollRequest] = useState(0);
   const [historyLoadRequest, setHistoryLoadRequest] = useState(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const relaySocketRef = useRef<WebSocket | null>(null);
+  const relayCommandHandlerRef = useRef<(data: unknown) => void>(() => undefined);
   const previousHistoryScrollHeight = useRef(0);
   const lastPasteEventAt = useRef(0);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const completionRequestRef = useRef(0);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
   const [status, setStatus] = useState(() =>
     DEMO_MODE
       ? "Demo layout fixture."
-      : window.localStorage.getItem(WORKSPACE_STORAGE_KEY)
-      ? "Restored previous workspace."
-      : "Choose a workspace to begin."
+      : readSavedWorkspaces().length > 0
+        ? "Restored previous workspaces."
+        : "Add a workspace to begin."
   );
+  const sessions = workspace ? workspaceSessions[workspace] ?? [] : [];
+  const activeTurnId = session
+    ? runningTurnsBySession[session.threadId] ?? null
+    : null;
+  const t = useMemo(
+    () => (key: UIMessageKey, values?: Record<string, string | number>) =>
+      textFor(language, key, values),
+    [language]
+  );
+  const modelSelectOptions = modelOptions.some(option => option.id === model)
+    ? modelOptions
+    : [{ id: model, label: model }, ...modelOptions];
+  const favoriteSessions = favoriteSessionIds.size
+    ? workspaces.flatMap(cwd =>
+        (workspaceSessions[cwd] ?? [])
+          .filter(item => favoriteSessionIds.has(item.threadId))
+          .map(item => ({ workspace: cwd, session: item }))
+      )
+    : [];
+
+  relayCommandHandlerRef.current = data => {
+    void handleRelayMessage(data);
+  };
+
+  useEffect(() => {
+    activeSessionIdRef.current = session?.threadId ?? null;
+  }, [session?.threadId]);
+
+  useEffect(() => {
+    turnStartedAtBySessionRef.current = turnStartedAtBySession;
+  }, [turnStartedAtBySession]);
+
+  useEffect(() => {
+    if (Object.keys(runningTurnsBySession).length === 0) {
+      return undefined;
+    }
+
+    setTimerNow(Date.now());
+    const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [runningTurnsBySession]);
+
+  function isActiveEventThread(threadId: string | null | undefined) {
+    return Boolean(threadId && activeSessionIdRef.current === threadId);
+  }
+
+  function markSessionTurnRunning(threadId: string, turnId: string) {
+    if (!threadId || !turnId) {
+      return;
+    }
+    setRunningTurnsBySession(previous => ({
+      ...previous,
+      [threadId]: turnId
+    }));
+    if (!turnStartedAtBySessionRef.current[threadId]) {
+      const next = {
+        ...turnStartedAtBySessionRef.current,
+        [threadId]: Date.now()
+      };
+      turnStartedAtBySessionRef.current = next;
+      setTurnStartedAtBySession(next);
+    }
+  }
+
+  function clearSessionTurnRunning(threadId: string) {
+    if (!threadId) {
+      return;
+    }
+
+    const startedAt = turnStartedAtBySessionRef.current[threadId];
+    if (startedAt) {
+      setLastTurnDurationBySession(previous => ({
+        ...previous,
+        [threadId]: Math.max(Date.now() - startedAt, 0)
+      }));
+      const nextStartedAt = { ...turnStartedAtBySessionRef.current };
+      delete nextStartedAt[threadId];
+      turnStartedAtBySessionRef.current = nextStartedAt;
+      setTurnStartedAtBySession(nextStartedAt);
+    }
+
+    setRunningTurnsBySession(previous => {
+      if (!previous[threadId]) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[threadId];
+      return next;
+    });
+  }
+
+  function updateTranscriptForActiveThread(
+    threadId: string | null | undefined,
+    updater: (previous: TranscriptEntry[]) => TranscriptEntry[]
+  ) {
+    if (!isActiveEventThread(threadId)) {
+      return;
+    }
+    setTranscript(updater);
+    requestScrollToBottom();
+  }
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    document.documentElement.style.colorScheme = themeMode;
+  }, [themeMode]);
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+  }, [language]);
 
   useEffect(() => {
     if (DEMO_MODE) {
@@ -170,9 +864,14 @@ export function App() {
     }
 
     return desktopApi.onEvent(event => {
+      publishRelay({
+        type: "desktop.event",
+        payload: { event }
+      });
+
       if (event.type === "turn.started") {
-        setActiveTurnId(event.turnId);
-        setTranscript(previous => [
+        markSessionTurnRunning(event.threadId, event.turnId);
+        updateTranscriptForActiveThread(event.threadId, previous => [
           ...previous,
           {
             id: `turn-started-${event.turnId}`,
@@ -181,25 +880,26 @@ export function App() {
             meta: event.turnId.slice(0, 8)
           }
         ]);
-        requestScrollToBottom();
-        setStatus("Codex is working.");
+        if (isActiveEventThread(event.threadId)) {
+          setStatus("Codex is working.");
+        }
       }
 
       if (event.type === "message.delta") {
-        setTranscript(previous => appendAssistantDelta(previous, event.text));
-        requestScrollToBottom();
+        updateTranscriptForActiveThread(event.threadId, previous =>
+          appendAssistantDelta(previous, event.text)
+        );
       }
 
       if (event.type === "command.delta") {
         const id = event.itemId ?? `${event.stream}-${event.turnId}`;
-        setTranscript(previous =>
+        updateTranscriptForActiveThread(event.threadId, previous =>
           appendCommandTimelineDelta(previous, id, event.stream, event.text)
         );
-        requestScrollToBottom();
       }
 
       if (event.type === "plan.updated") {
-        setTranscript(previous =>
+        updateTranscriptForActiveThread(event.threadId, previous =>
           upsertTimelineEvent(previous, {
             id: `plan-${event.turnId}`,
             role: "plan",
@@ -207,12 +907,11 @@ export function App() {
             meta: event.turnId.slice(0, 8)
           })
         );
-        requestScrollToBottom();
       }
 
       if (event.type === "diff.updated" || event.type === "file.patch.updated") {
         const value = event.type === "diff.updated" ? event.diff : event.patch;
-        setTranscript(previous =>
+        updateTranscriptForActiveThread(event.threadId, previous =>
           upsertTimelineEvent(previous, {
             id: `diff-${event.turnId}`,
             role: event.type === "file.patch.updated" ? "edited" : "diff",
@@ -223,7 +922,6 @@ export function App() {
             meta: event.turnId.slice(0, 8)
           })
         );
-        requestScrollToBottom();
       }
 
       if (event.type === "approval.requested") {
@@ -239,7 +937,7 @@ export function App() {
           },
           ...previous.filter(item => item.id !== event.requestId)
         ]);
-        setTranscript(previous =>
+        updateTranscriptForActiveThread(event.threadId, previous =>
           upsertTimelineEvent(previous, {
             id: `approval-${String(event.requestId)}`,
             role: "approval",
@@ -247,24 +945,136 @@ export function App() {
             meta: event.approvalType
           })
         );
-        requestScrollToBottom();
-        setStatus("Approval requested.");
+        if (isActiveEventThread(event.threadId)) {
+          setStatus("Approval requested.");
+        }
       }
 
       if (event.type === "raw.notification") {
+        const rawThreadId = threadIdFromRawNotification(event);
+        if (!rawThreadId || isActiveEventThread(rawThreadId)) {
+          updateRuntimeStateFromRawNotification(event);
+        }
         const entry = timelineEntryFromRawNotification(event);
-        if (entry) {
-          setTranscript(previous => upsertTimelineEvent(previous, entry));
-          requestScrollToBottom();
+        if (entry && isActiveEventThread(rawThreadId)) {
+          updateTranscriptForActiveThread(rawThreadId, previous =>
+            upsertTimelineEvent(previous, entry)
+          );
         }
       }
 
       if (event.type === "turn.completed") {
-        setActiveTurnId(null);
-        setStatus("Turn completed.");
+        clearSessionTurnRunning(event.threadId);
+        handleTurnCompletedReminder(event.threadId);
+        if (isActiveEventThread(event.threadId)) {
+          setStatus("Turn completed.");
+        }
       }
     });
-  }, [desktopApi]);
+  }, [
+    desktopApi,
+    notificationSoundFile?.url,
+    soundNotificationsEnabled
+  ]);
+
+  function updateRuntimeStateFromRawNotification(
+    event: Extract<CodexAdapterEvent, { type: "raw.notification" }>
+  ) {
+    const rateLimits = rateLimitUsageFromUnknown(event.raw.params);
+    if (rateLimits) {
+      setRateLimitUsage(rateLimits);
+    }
+
+    if (event.method === "thread/tokenUsage/updated") {
+      const usage = contextUsageFromNotification(event.raw.params);
+      if (usage) {
+        setContextUsage(usage);
+      }
+      return;
+    }
+
+    if (event.method === "thread/settings/updated") {
+      const settings = asRecord(asRecord(event.raw.params).threadSettings);
+      const nextModel = stringOrUndefined(settings.model);
+      const nextEffort = stringOrUndefined(settings.effort);
+      if (nextModel) {
+        setModel(nextModel);
+        window.localStorage.setItem(MODEL_STORAGE_KEY, nextModel);
+      }
+      if (isModelEffort(nextEffort)) {
+        setModelEffort(nextEffort);
+        window.localStorage.setItem(MODEL_EFFORT_STORAGE_KEY, nextEffort);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (DEMO_MODE) {
+      return undefined;
+    }
+
+    if (!relayEndpoint.trim() || !relayApiKey.trim()) {
+      relaySocketRef.current?.close();
+      relaySocketRef.current = null;
+      setRelayState("disabled");
+      setRelayError("");
+      return undefined;
+    }
+
+    setRelayState("connecting");
+    setRelayError("");
+    const relayURL = relayWebSocketURL(relayEndpoint, "desktop", deviceId, relayApiKey);
+    const socket = new WebSocket(relayURL);
+    relaySocketRef.current = socket;
+
+    socket.addEventListener("open", () => {
+      setRelayState("connected");
+      setRelayError("");
+      publishDesktopSnapshot();
+    });
+    socket.addEventListener("message", event => {
+      relayCommandHandlerRef.current(event.data);
+    });
+    socket.addEventListener("close", () => {
+      if (relaySocketRef.current === socket) {
+        relaySocketRef.current = null;
+        setRelayState("error");
+        setRelayError(`Connection closed. Check endpoint and API key: ${relayURL}`);
+      }
+    });
+    socket.addEventListener("error", () => {
+      setRelayState("error");
+      setRelayError(`WebSocket error. Check endpoint and API key: ${relayURL}`);
+    });
+
+    return () => {
+      if (relaySocketRef.current === socket) {
+        relaySocketRef.current = null;
+      }
+      socket.close();
+    };
+  }, [deviceId, relayApiKey, relayEndpoint]);
+
+  useEffect(() => {
+    publishDesktopSnapshot();
+  }, [
+    approvals,
+    connectionState,
+    contextUsage,
+    model,
+    modelEffort,
+    permissionMode,
+    rateLimitUsage,
+    relayState,
+    runningTurnsBySession,
+    session,
+    sessions,
+    status,
+    transcript,
+    workspace,
+    workspaceSessions,
+    workspaces
+  ]);
 
   useEffect(() => {
     if (scrollRequest === 0) {
@@ -328,6 +1138,26 @@ export function App() {
   }, [connectionState, desktopApi]);
 
   useEffect(() => {
+    if (DEMO_MODE || connectionState !== "connected") {
+      return;
+    }
+    void refreshModelOptions();
+  }, [connectionState, desktopApi]);
+
+  useEffect(() => {
+    if (DEMO_MODE || connectionState !== "connected") {
+      return undefined;
+    }
+
+    void refreshRateLimitUsage();
+    const interval = window.setInterval(() => {
+      void refreshRateLimitUsage();
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, [connectionState, desktopApi]);
+
+  useEffect(() => {
     if (!activeTurnId) {
       return undefined;
     }
@@ -349,19 +1179,109 @@ export function App() {
       return;
     }
 
-    if (!workspace || !desktopApi || connectionState !== "connected") {
+    if (workspaces.length === 0 || !desktopApi || connectionState !== "connected") {
       return;
     }
 
-    void refreshSessions(workspace);
-  }, [connectionState, desktopApi, workspace]);
+    for (const cwd of workspaces) {
+      void refreshSessions(cwd, {
+        openPreferred: cwd === workspace && session === null
+      });
+    }
+  }, [connectionState, desktopApi, session, workspace, workspaces]);
+
+  useEffect(() => {
+    function clearActiveUnreadWhenFocused() {
+      if (
+        document.visibilityState === "visible" &&
+        document.hasFocus() &&
+        activeSessionIdRef.current
+      ) {
+        clearSessionUnread(activeSessionIdRef.current);
+      }
+    }
+
+    window.addEventListener("focus", clearActiveUnreadWhenFocused);
+    document.addEventListener("visibilitychange", clearActiveUnreadWhenFocused);
+    return () => {
+      window.removeEventListener("focus", clearActiveUnreadWhenFocused);
+      document.removeEventListener("visibilitychange", clearActiveUnreadWhenFocused);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!composerCompletion || !desktopApi || !session) {
+      return undefined;
+    }
+
+    const requestId = completionRequestRef.current + 1;
+    completionRequestRef.current = requestId;
+    const { mode, query } = composerCompletion;
+    const timer = window.setTimeout(() => {
+      const search =
+        mode === "file" && workspace
+          ? desktopApi.searchWorkspaceFiles({ cwd: workspace, query, limit: 36 })
+          : mode === "skill"
+            ? desktopApi.searchSkills({ query, limit: 36 })
+            : Promise.resolve([]);
+
+      void search
+        .then(items => {
+          if (completionRequestRef.current !== requestId) {
+            return;
+          }
+          setComposerCompletion(current => {
+            if (!current || current.mode !== mode || current.query !== query) {
+              return current;
+            }
+            return {
+              ...current,
+              items,
+              selectedIndex: Math.min(current.selectedIndex, Math.max(items.length - 1, 0)),
+              loading: false
+            };
+          });
+        })
+        .catch(error => {
+          if (completionRequestRef.current !== requestId) {
+            return;
+          }
+          setComposerCompletion(current =>
+            current && current.mode === mode && current.query === query
+              ? { ...current, items: [], selectedIndex: 0, loading: false }
+              : current
+          );
+          setStatus(error instanceof Error ? error.message : String(error));
+        });
+    }, 90);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    composerCompletion?.mode,
+    composerCompletion?.query,
+    desktopApi,
+    session?.threadId,
+    workspace
+  ]);
 
   const canStartSession =
     connectionState === "connected" &&
     workspace !== null &&
-    session === null &&
     !isSessionOpening;
   const isTurnRunning = activeTurnId !== null;
+  const isConversationLoading =
+    isSessionOpening && session !== null && transcript.length === 0;
+  const activeTurnStartedAt = session
+    ? turnStartedAtBySession[session.threadId] ?? null
+    : null;
+  const activeTurnElapsedMs =
+    isTurnRunning && activeTurnStartedAt
+      ? Math.max(timerNow - activeTurnStartedAt, 0)
+      : null;
+  const activeLastTurnDurationMs = session
+    ? lastTurnDurationBySession[session.threadId] ?? null
+    : null;
+  const visibleTurnDurationMs = activeTurnElapsedMs ?? activeLastTurnDurationMs;
   const canSubmit =
     connectionState === "connected" &&
     session !== null &&
@@ -407,16 +1327,194 @@ export function App() {
 
     const selected = await desktopApi.chooseWorkspace();
     if (selected) {
-      window.localStorage.setItem(WORKSPACE_STORAGE_KEY, selected);
-      setWorkspace(selected);
+      const nextWorkspaces = upsertWorkspace(workspaces, selected);
+      setWorkspaces(nextWorkspaces);
+      saveWorkspaces(nextWorkspaces);
+      selectWorkspace(selected);
+      setStatus("Workspace added. Loading sessions.");
+      if (connectionState === "connected") {
+        void refreshSessions(selected, { openPreferred: true });
+      }
+    }
+  }
+
+  function selectWorkspace(cwd: string) {
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, cwd);
+    setWorkspace(cwd);
+    const workspaceHasCurrentSession =
+      session !== null &&
+      (workspaceSessions[cwd] ?? []).some(item => item.threadId === session.threadId);
+    if (!workspaceHasCurrentSession) {
       setSession(null);
-      setSessions([]);
       setTranscript([]);
       resetVisibleTranscriptWindow();
       setAttachments([]);
       setApprovals([]);
-      setActiveTurnId(null);
-      setStatus("Workspace selected. Opening session.");
+      setStatus(`Selected workspace ${workspaceName(cwd)}.`);
+    }
+    if (connectionState === "connected" && !workspaceSessions[cwd]) {
+      void refreshSessions(cwd, { openPreferred: false });
+    }
+  }
+
+  function toggleWorkspaceCollapsed(cwd: string) {
+    setCollapsedWorkspaces(previous => {
+      const next = new Set(previous);
+      if (next.has(cwd)) {
+        next.delete(cwd);
+      } else {
+        next.add(cwd);
+      }
+      saveStringList(COLLAPSED_WORKSPACES_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+  }
+
+  function removeWorkspace(cwd: string) {
+    const workspaceLabel = workspaceName(cwd);
+    if (
+      !window.confirm(
+        `Remove ${workspaceLabel} from CodeP? Codex session history on disk will not be deleted.`
+      )
+    ) {
+      return;
+    }
+
+    const removedSessionIds = new Set(
+      (workspaceSessions[cwd] ?? []).map(item => item.threadId)
+    );
+    const nextWorkspaces = workspaces.filter(item => item !== cwd);
+    setWorkspaces(nextWorkspaces);
+    saveWorkspaces(nextWorkspaces);
+    setWorkspaceSessions(previous => {
+      const next = { ...previous };
+      delete next[cwd];
+      return next;
+    });
+    setFavoriteSessionIds(previous => {
+      const next = new Set(
+        Array.from(previous).filter(threadId => !removedSessionIds.has(threadId))
+      );
+      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+    saveStringMap(
+      SESSION_TITLE_OVERRIDES_STORAGE_KEY,
+      Object.fromEntries(
+        Object.entries(readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY)).filter(
+          ([threadId]) => !removedSessionIds.has(threadId)
+        )
+      )
+    );
+    setSessionIconOverrides(previous => {
+      const next = Object.fromEntries(
+        Object.entries(previous).filter(([threadId]) => !removedSessionIds.has(threadId))
+      );
+      saveStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY, next);
+      return next;
+    });
+    setRunningTurnsBySession(previous =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([threadId]) => !removedSessionIds.has(threadId))
+      )
+    );
+    setCollapsedWorkspaces(previous => {
+      const next = new Set(previous);
+      next.delete(cwd);
+      saveStringList(COLLAPSED_WORKSPACES_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+
+    if (workspace === cwd) {
+      const nextWorkspace = nextWorkspaces[0] ?? null;
+      setWorkspace(nextWorkspace);
+      if (nextWorkspace) {
+        window.localStorage.setItem(WORKSPACE_STORAGE_KEY, nextWorkspace);
+      } else {
+        window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+      }
+      setSession(null);
+      setTranscript([]);
+      resetVisibleTranscriptWindow();
+      setAttachments([]);
+      setApprovals([]);
+    }
+
+    setStatus(`Removed workspace ${workspaceLabel} from the sidebar.`);
+  }
+
+  function toggleFavoriteSession(threadId: string) {
+    setFavoriteSessionIds(previous => {
+      const next = new Set(previous);
+      if (next.has(threadId)) {
+        next.delete(threadId);
+      } else {
+        next.add(threadId);
+      }
+      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+  }
+
+  function updateSessionIcon(threadId: string, iconId: SessionIconId) {
+    setSessionIconOverrides(previous => {
+      const next = {
+        ...previous,
+        [threadId]: iconId
+      };
+      saveStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY, next);
+      return next;
+    });
+  }
+
+  async function renameSession(cwd: string, target: SessionView, title: string) {
+    const nextTitle = title.trim();
+    if (!nextTitle || nextTitle === target.title) {
+      return;
+    }
+
+    try {
+      await renameSessionTo(cwd, target, nextTitle, { prompt: true });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function renameSessionTo(
+    cwd: string,
+    target: SessionView,
+    nextTitle: string,
+    options: { prompt: boolean }
+  ) {
+    if (!DEMO_MODE && desktopApi) {
+      await desktopApi.renameThread({
+        threadId: target.threadId,
+        name: nextTitle
+      });
+    }
+
+    const renamedSession = { ...target, title: nextTitle };
+    saveStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY, {
+      ...readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY),
+      [target.threadId]: nextTitle
+    });
+    setWorkspaceSessions(previous => ({
+      ...previous,
+      [cwd]: (previous[cwd] ?? []).map(item =>
+        item.threadId === target.threadId ? renamedSession : item
+      )
+    }));
+
+    if (session?.threadId === target.threadId) {
+      setSession(renamedSession);
+      saveSession(cwd, renamedSession);
+      setStatus("Session renamed.");
+    } else {
+      setStatus(
+        options.prompt
+          ? "Session renamed."
+          : "Session renamed from mobile."
+      );
     }
   }
 
@@ -429,12 +1527,103 @@ export function App() {
     setStatus("Starting local Codex app-server.");
     try {
       const response = await desktopApi.connect();
+      await refreshModelOptions();
       setConnectionState("connected");
       setStatus(`Connected: ${response.userAgent}`);
     } catch (error) {
       setConnectionState("disconnected");
       setStatus(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function refreshModelOptions() {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      const response = await desktopApi.listModels({ includeHidden: true, limit: 100 });
+      const modelSummaries = modelListData(response);
+      const options = modelSummaries
+        .map(modelOptionFromSummary)
+        .filter(option => option !== null);
+      if (options.length > 0) {
+        setModelOptions(options);
+        const defaultModel = modelSummaries.find(item => item.isDefault);
+        const defaultOption = defaultModel ? modelOptionFromSummary(defaultModel) : null;
+        if (!window.localStorage.getItem(MODEL_STORAGE_KEY) && defaultOption) {
+          updateModel(defaultOption.id);
+        }
+      }
+    } catch {
+      setModelOptions(FALLBACK_MODEL_OPTIONS);
+    }
+  }
+
+  async function refreshRateLimitUsage() {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      const response = await desktopApi.getStatus();
+      const rateLimits = rateLimitUsageFromUnknown(response);
+      if (rateLimits) {
+        setRateLimitUsage(rateLimits);
+      }
+    } catch {
+      // Older Codex app-server builds may not expose a status RPC. Keep the
+      // last notification-derived values instead of surfacing a noisy error.
+    }
+  }
+
+  function modelListData(response: unknown): Array<{
+    id?: string;
+    model?: string;
+    slug?: string;
+    displayName?: string;
+    display_name?: string;
+    isDefault?: boolean;
+  }> {
+    const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+    if (Array.isArray(record.data)) {
+      return record.data as Array<{
+        id?: string;
+        model?: string;
+        slug?: string;
+        displayName?: string;
+        display_name?: string;
+        isDefault?: boolean;
+      }>;
+    }
+    if (Array.isArray(record.models)) {
+      return record.models as Array<{
+        id?: string;
+        model?: string;
+        slug?: string;
+        displayName?: string;
+        display_name?: string;
+        isDefault?: boolean;
+      }>;
+    }
+    return [];
+  }
+
+  function modelOptionFromSummary(item: {
+    id?: string;
+    model?: string;
+    slug?: string;
+    displayName?: string;
+    display_name?: string;
+  }): ModelOption | null {
+    const id = item.id || item.model || item.slug;
+    if (!id) {
+      return null;
+    }
+    return {
+      id,
+      label: item.displayName || item.display_name || item.model || id
+    };
   }
 
   async function startSession() {
@@ -449,17 +1638,38 @@ export function App() {
       const latestSession = sessions[0] ?? savedSession;
       const response = latestSession
         ? await desktopApi
-            .resumeThread({ threadId: latestSession.threadId, cwd: workspace })
-            .catch(() => desktopApi.startThread({ cwd: workspace }))
-        : await desktopApi.startThread({ cwd: workspace });
+            .resumeThread({
+              threadId: latestSession.threadId,
+              cwd: workspace,
+              ...codexPermissionOptions(permissionMode),
+              ...codexModelOptions(model, modelEffort)
+            })
+            .catch(() =>
+              desktopApi.startThread({
+                cwd: workspace,
+                ...codexPermissionOptions(permissionMode),
+                ...codexModelOptions(model, modelEffort)
+              })
+            )
+        : await desktopApi.startThread({
+            cwd: workspace,
+            ...codexPermissionOptions(permissionMode),
+            ...codexModelOptions(model, modelEffort)
+          });
+      applyRuntimeSettingsFromResponse(response);
+      const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
       const nextSession = {
         threadId: response.thread.id,
-        title: response.thread.preview || shortWorkspace,
+        title: titleOverrides[response.thread.id] ?? response.thread.preview ?? shortWorkspace,
         updatedAt: response.thread.updatedAt
       };
       setSession(nextSession);
+      clearSessionUnread(nextSession.threadId);
       saveSession(workspace, nextSession);
-      setSessions(previous => upsertSession(previous, nextSession));
+      setWorkspaceSessions(previous => ({
+        ...previous,
+        [workspace]: upsertSession(previous[workspace] ?? [], nextSession)
+      }));
       resetVisibleTranscriptWindow();
       setTranscript([
         ...transcriptFromThread(response.thread),
@@ -486,22 +1696,40 @@ export function App() {
     if (!workspace || !desktopApi || isSessionOpening) {
       return;
     }
+    await startNewSessionForWorkspace(workspace);
+  }
+
+  async function startNewSessionForWorkspace(cwd: string) {
+    if (!desktopApi || isSessionOpening) {
+      return;
+    }
 
     setIsSessionOpening(true);
     setStatus("Creating new Codex session.");
     try {
-      const response = await desktopApi.startThread({ cwd: workspace });
+      const response = await desktopApi.startThread({
+        cwd,
+        ...codexPermissionOptions(permissionMode),
+        ...codexModelOptions(model, modelEffort)
+      });
+      applyRuntimeSettingsFromResponse(response);
       const nextSession = {
         threadId: response.thread.id,
         title: response.thread.preview || "New session",
         updatedAt: response.thread.updatedAt
       };
+      window.localStorage.setItem(WORKSPACE_STORAGE_KEY, cwd);
+      setWorkspace(cwd);
       setSession(nextSession);
-      saveSession(workspace, nextSession);
-      setSessions(previous => upsertSession(previous, nextSession));
+      clearSessionUnread(nextSession.threadId);
+      saveSession(cwd, nextSession);
+      setWorkspaceSessions(previous => ({
+        ...previous,
+        [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
+      }));
       resetVisibleTranscriptWindow();
       setTranscript([
-        systemEntry(`New session started in ${workspace}`)
+        systemEntry(`New session started in ${cwd}`)
       ]);
       requestScrollToBottom();
       setStatus("New session ready.");
@@ -512,32 +1740,68 @@ export function App() {
     }
   }
 
-  async function openSession(target: SessionView) {
-    if (!workspace || !desktopApi || isSessionOpening) {
+  async function openSession(target: SessionView, cwd = workspace) {
+    if (!cwd || !desktopApi || isSessionOpening) {
       return;
     }
 
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, cwd);
+    setWorkspace(cwd);
+    setSession(target);
+    clearSessionUnread(target.threadId);
+    resetVisibleTranscriptWindow();
+    setTranscript([]);
+    setAttachments([]);
+    setApprovals([]);
     setIsSessionOpening(true);
     setStatus("Resuming session.");
     try {
       const response = await desktopApi.resumeThread({
         threadId: target.threadId,
-        cwd: workspace
+        cwd,
+        ...codexPermissionOptions(permissionMode),
+        ...codexModelOptions(model, modelEffort)
       });
+      applyRuntimeSettingsFromResponse(response);
+      const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
       const nextSession = {
         threadId: response.thread.id,
-        title: response.thread.preview || target.title || shortWorkspace,
+        title:
+          titleOverrides[response.thread.id] ??
+          response.thread.preview ??
+          target.title ??
+          workspaceName(cwd),
         updatedAt: response.thread.updatedAt
       };
+      window.localStorage.setItem(WORKSPACE_STORAGE_KEY, cwd);
+      setWorkspace(cwd);
       setSession(nextSession);
-      saveSession(workspace, nextSession);
+      clearSessionUnread(nextSession.threadId);
+      saveSession(cwd, nextSession);
+      setWorkspaceSessions(previous => ({
+        ...previous,
+        [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
+      }));
       resetVisibleTranscriptWindow();
       setTranscript([
         ...transcriptFromThread(response.thread),
-        systemEntry(`Session resumed in ${workspace}`)
+        systemEntry(`Session resumed in ${cwd}`)
       ]);
       requestScrollToBottom();
-      setStatus("Session resumed.");
+      const renameOverride = titleOverrides[response.thread.id];
+      if (
+        renameOverride &&
+        response.thread.name !== renameOverride &&
+        response.thread.preview !== renameOverride
+      ) {
+        await desktopApi.renameThread({
+          threadId: response.thread.id,
+          name: renameOverride
+        });
+        setStatus("Session resumed. Synced Codex rename.");
+      } else {
+        setStatus("Session resumed.");
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -545,7 +1809,10 @@ export function App() {
     }
   }
 
-  async function refreshSessions(cwd: string) {
+  async function refreshSessions(
+    cwd: string,
+    options: { openPreferred?: boolean } = {}
+  ) {
     if (!desktopApi) {
       return;
     }
@@ -553,24 +1820,28 @@ export function App() {
     setIsSessionsLoading(true);
     try {
       const response = await desktopApi.listThreads({ cwd });
+      const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
       const nextSessions = response.data.map(thread => ({
         threadId: thread.id,
-        title: thread.preview || thread.name || shortWorkspace,
+        title: titleOverrides[thread.id] ?? thread.preview ?? thread.name ?? workspaceName(cwd),
         updatedAt: thread.updatedAt,
         status:
           typeof thread.status === "string"
             ? thread.status
             : JSON.stringify(thread.status)
       }));
-      setSessions(nextSessions);
+      setWorkspaceSessions(previous => ({
+        ...previous,
+        [cwd]: nextSessions
+      }));
 
-      if (!session) {
+      if (options.openPreferred) {
         const savedSession = readSavedSession(cwd);
         const preferred =
           nextSessions.find(item => item.threadId === savedSession?.threadId) ??
           nextSessions[0];
         if (preferred) {
-          void openSession(preferred);
+          void openSession(preferred, cwd);
         } else {
           void startSession();
         }
@@ -583,19 +1854,28 @@ export function App() {
   }
 
   async function sendTurn() {
+    const text = composer.trim();
+    const outgoingAttachments = attachments;
+    await sendTurnRequest(text, outgoingAttachments);
+  }
+
+  async function sendTurnRequest(
+    text: string,
+    outgoingAttachments: ComposerAttachment[]
+  ) {
     if (
       !desktopApi ||
       !session ||
-      (composer.trim().length === 0 && attachments.length === 0)
+      (text.trim().length === 0 && outgoingAttachments.length === 0)
     ) {
       return;
     }
 
-    const text = composer.trim();
-    const outgoingAttachments = attachments;
-    const input = buildTurnInput(text, outgoingAttachments);
-    const displayText = userTranscriptText(text, outgoingAttachments);
+    const trimmedText = text.trim();
+    const input = buildTurnInput(trimmedText, outgoingAttachments);
+    const displayText = userTranscriptText(trimmedText, outgoingAttachments);
     setComposer("");
+    setComposerCompletion(null);
     setAttachments([]);
     resetVisibleTranscriptWindow();
     setTranscript(previous => [
@@ -608,13 +1888,15 @@ export function App() {
     try {
       const response = await desktopApi.startTurn({
         threadId: session.threadId,
-        text,
-        input
+        text: trimmedText,
+        input,
+        ...codexPermissionOptions(permissionMode),
+        ...codexModelOptions(model, modelEffort)
       });
-      setActiveTurnId(response.turn.id);
+      markSessionTurnRunning(session.threadId, response.turn.id);
       requestScrollToBottom();
     } catch (error) {
-      setActiveTurnId(null);
+      clearSessionTurnRunning(session.threadId);
       setAttachments(outgoingAttachments);
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -655,6 +1937,28 @@ export function App() {
     }
   }
 
+  async function chooseAttachmentFiles() {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      const selectedAttachments = await desktopApi.chooseAttachmentFiles();
+      if (selectedAttachments.length === 0) {
+        return;
+      }
+
+      addAttachments(selectedAttachments);
+      setStatus(
+        `Attached ${selectedAttachments.length} file${
+          selectedAttachments.length === 1 ? "" : "s"
+        }.`
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function addAttachments(nextAttachments: ComposerAttachment[]) {
     setAttachments(previous => {
       const existingPaths = new Set(previous.map(item => item.path));
@@ -669,6 +1973,299 @@ export function App() {
     setAttachments(previous => previous.filter(item => item.id !== id));
   }
 
+  async function handleRelayMessage(data: unknown) {
+    const envelope = parseRelayEnvelope(data);
+    if (!envelope) {
+      return;
+    }
+
+    if (envelope.type === "client.send_message") {
+      const text = envelope.payload?.text?.trim() ?? "";
+      const remoteAttachments = validRemoteAttachments(envelope.payload?.attachments);
+      if (!text && remoteAttachments.length === 0) {
+        return;
+      }
+      const savedAttachments =
+        remoteAttachments.length > 0 && desktopApi
+          ? await desktopApi.saveRemoteAttachments(remoteAttachments)
+          : [];
+      await sendTurnRequest(text, savedAttachments);
+      return;
+    }
+
+    if (envelope.type === "client.interrupt") {
+      await interruptTurn();
+      return;
+    }
+
+    if (envelope.type === "client.open_session") {
+      const cwd = envelope.payload?.workspace;
+      const sessionId = envelope.payload?.sessionId;
+      if (!cwd || !sessionId) {
+        return;
+      }
+      const target =
+        (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
+        ({ threadId: sessionId, title: workspaceName(cwd) } satisfies SessionView);
+      await openSession(target, cwd);
+      return;
+    }
+
+    if (envelope.type === "client.new_session") {
+      const cwd = envelope.payload?.workspace;
+      if (cwd) {
+        await startNewSessionForWorkspace(cwd);
+      }
+      return;
+    }
+
+    if (envelope.type === "client.rename_session") {
+      const cwd = envelope.payload?.workspace;
+      const sessionId = envelope.payload?.sessionId;
+      const title = envelope.payload?.title?.trim();
+      if (!cwd || !sessionId || !title) {
+        return;
+      }
+      const target =
+        (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
+        ({ threadId: sessionId, title, updatedAt: undefined } satisfies SessionView);
+      await renameSessionTo(cwd, target, title, { prompt: false });
+      return;
+    }
+
+    if (envelope.type === "client.resolve_approval") {
+      const requestId = envelope.payload?.requestId;
+      const decision = envelope.payload?.decision;
+      const approval = approvals.find(item => String(item.id) === String(requestId));
+      if (approval && decision) {
+        await resolveApproval(approval, decision);
+      }
+      return;
+    }
+
+    if (envelope.type === "client.set_permissions") {
+      const nextMode = envelope.payload?.permissionMode;
+      if (isPermissionMode(nextMode)) {
+        updatePermissionMode(nextMode);
+      }
+      return;
+    }
+
+    if (envelope.type === "client.set_model") {
+      if (typeof envelope.payload?.model === "string") {
+        updateModel(envelope.payload.model);
+      }
+      if (isModelEffort(envelope.payload?.effort)) {
+        updateModelEffort(envelope.payload.effort);
+      }
+    }
+  }
+
+  function publishDesktopSnapshot() {
+    const snapshotWorkspaces: RemoteSnapshotWorkspace[] = workspaces.map(cwd => ({
+      path: cwd,
+      name: workspaceName(cwd),
+      sessions: (workspaceSessions[cwd] ?? []).map(item => ({
+        id: item.threadId,
+        title: item.title,
+        updatedAt: sessionMeta(item),
+        status: runningTurnsBySession[item.threadId] ? "working" : "ready"
+      }))
+    }));
+
+    publishRelay({
+      type: "desktop.snapshot",
+      payload: {
+        device: {
+          id: deviceId,
+          name: "three workstation",
+          workspace: workspace ?? "",
+          connection: relayState === "connected" ? "online" : "offline",
+          lastSeen: "Now"
+        },
+        workspaces: snapshotWorkspaces,
+        activeWorkspace: workspace,
+        sessions: sessions.map(item => ({
+          id: item.threadId,
+          title: item.title,
+          updatedAt: sessionMeta(item),
+          status: runningTurnsBySession[item.threadId] ? "working" : "ready"
+        })),
+        activeSessionId: session?.threadId ?? null,
+        messages: transcript.slice(-40).map(remoteMessageFromTranscript),
+        approvals: approvals.map(item => ({
+          id: String(item.id),
+          title: item.type,
+          detail: approvalSummary(item.request),
+          risk: item.type === "permissions" ? "high" : "medium"
+        })),
+        status,
+        permissionMode,
+        model,
+        modelEffort,
+        contextUsage,
+        rateLimitUsage,
+        isWorking: session ? Boolean(runningTurnsBySession[session.threadId]) : false
+      }
+    });
+  }
+
+  function publishRelay(message: RelayEnvelope) {
+    const socket = relaySocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify(message));
+  }
+
+  function updateRelayEndpoint(value: string) {
+    setRelayEndpoint(value);
+    window.localStorage.setItem(RELAY_ENDPOINT_STORAGE_KEY, value);
+  }
+
+  function updateRelayApiKey(value: string) {
+    setRelayApiKey(value);
+    window.localStorage.setItem(RELAY_API_KEY_STORAGE_KEY, value);
+  }
+
+  function updatePermissionMode(value: PermissionMode) {
+    setPermissionMode(value);
+    window.localStorage.setItem(PERMISSIONS_STORAGE_KEY, value);
+    setStatus(`Permissions set to ${permissionLabel(value, language)}.`);
+  }
+
+  function updateThemeMode(value: ThemeMode) {
+    setThemeMode(value);
+    window.localStorage.setItem(THEME_STORAGE_KEY, value);
+    setStatus(`Theme set to ${value}.`);
+  }
+
+  function updateLanguage(value: UILanguage) {
+    setLanguage(value);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, value);
+    setStatus(`Language set to ${LANGUAGE_OPTIONS.find(option => option.value === value)?.label ?? value}.`);
+  }
+
+  function updateSoundNotificationsEnabled(value: boolean) {
+    setSoundNotificationsEnabled(value);
+    window.localStorage.setItem(SOUND_NOTIFICATIONS_STORAGE_KEY, String(value));
+    setStatus(value ? "Turn completion sound enabled." : "Turn completion sound disabled.");
+  }
+
+  async function chooseNotificationSound() {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      const file = await desktopApi.chooseNotificationSoundFile();
+      if (!file) {
+        return;
+      }
+      setNotificationSoundFile(file);
+      window.localStorage.setItem(
+        NOTIFICATION_SOUND_FILE_STORAGE_KEY,
+        JSON.stringify(file)
+      );
+      setStatus(`Notification sound set to ${file.name}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function clearNotificationSound() {
+    setNotificationSoundFile(null);
+    window.localStorage.removeItem(NOTIFICATION_SOUND_FILE_STORAGE_KEY);
+    setStatus("Notification sound cleared.");
+  }
+
+  function updateModel(value: string) {
+    const nextModel = value.trim();
+    if (!nextModel) {
+      return;
+    }
+    setModel(nextModel);
+    window.localStorage.setItem(MODEL_STORAGE_KEY, nextModel);
+    setStatus(`Model set to ${nextModel}.`);
+  }
+
+  function updateModelEffort(value: ModelEffort) {
+    setModelEffort(value);
+    window.localStorage.setItem(MODEL_EFFORT_STORAGE_KEY, value);
+    setStatus(`Reasoning set to ${effortLabel(value, language)}.`);
+  }
+
+  function handleTurnCompletedReminder(threadId: string) {
+    if (soundNotificationsEnabled) {
+      void playTurnCompletionSound();
+    }
+
+    const activeSessionId = activeSessionIdRef.current;
+    const isActiveAndVisible =
+      activeSessionId === threadId &&
+      document.visibilityState === "visible" &&
+      document.hasFocus();
+    if (!isActiveAndVisible) {
+      markSessionUnread(threadId);
+    }
+  }
+
+  async function playTurnCompletionSound() {
+    try {
+      if (notificationSoundFile?.url) {
+        const audio = new Audio(notificationSoundFile.url);
+        audio.volume = 0.72;
+        await audio.play();
+        return;
+      }
+      await playFallbackNotificationTone();
+    } catch (error) {
+      setStatus(
+        error instanceof Error
+          ? `Unable to play notification sound: ${error.message}`
+          : "Unable to play notification sound."
+      );
+    }
+  }
+
+  function markSessionUnread(threadId: string) {
+    setUnreadSessionIds(previous => {
+      if (previous.has(threadId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.add(threadId);
+      saveStringList(UNREAD_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+  }
+
+  function clearSessionUnread(threadId: string) {
+    setUnreadSessionIds(previous => {
+      if (!previous.has(threadId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.delete(threadId);
+      saveStringList(UNREAD_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+  }
+
+  function applyRuntimeSettingsFromResponse(response: {
+    model?: string;
+    reasoningEffort?: string | null;
+  }) {
+    if (response.model) {
+      setModel(response.model);
+      window.localStorage.setItem(MODEL_STORAGE_KEY, response.model);
+    }
+    if (isModelEffort(response.reasoningEffort)) {
+      setModelEffort(response.reasoningEffort);
+      window.localStorage.setItem(MODEL_EFFORT_STORAGE_KEY, response.reasoningEffort);
+    }
+  }
+
   function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
     lastPasteEventAt.current = Date.now();
     const shouldHandleAttachment = shouldHandleAttachmentPaste(event.clipboardData);
@@ -680,10 +2277,91 @@ export function App() {
     });
   }
 
+  function handleComposerChange(value: string, cursor: number) {
+    setComposer(value);
+    updateComposerCompletion(value, cursor);
+  }
+
+  function updateComposerCompletion(value: string, cursor: number) {
+    const trigger = activeComposerTrigger(value, cursor);
+    if (!trigger || !session) {
+      setComposerCompletion(null);
+      return;
+    }
+
+    setComposerCompletion(current => ({
+      mode: trigger.mode,
+      query: trigger.query,
+      tokenStart: trigger.tokenStart,
+      cursor,
+      items:
+        current?.mode === trigger.mode && current.query === trigger.query
+          ? current.items
+          : [],
+      selectedIndex:
+        current?.mode === trigger.mode && current.query === trigger.query
+          ? current.selectedIndex
+          : 0,
+      loading: true
+    }));
+  }
+
+  function openComposerCompletion(mode: ComposerCompletionMode) {
+    if (!session) {
+      return;
+    }
+
+    const cursor = composerRef.current?.selectionStart ?? composer.length;
+    setComposerCompletion({
+      mode,
+      query: "",
+      tokenStart: cursor,
+      cursor,
+      items: [],
+      selectedIndex: 0,
+      loading: true
+    });
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & {
       isComposing?: boolean;
     };
+
+    if (composerCompletion) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        setComposerCompletion(current => {
+          if (!current || current.items.length === 0) {
+            return current;
+          }
+          const nextIndex =
+            (current.selectedIndex + direction + current.items.length) %
+            current.items.length;
+          return { ...current, selectedIndex: nextIndex };
+        });
+        return;
+      }
+
+      if (
+        (event.key === "Enter" || event.key === "Tab") &&
+        composerCompletion.items[composerCompletion.selectedIndex]
+      ) {
+        event.preventDefault();
+        acceptComposerCompletion(
+          composerCompletion.items[composerCompletion.selectedIndex]
+        );
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setComposerCompletion(null);
+        return;
+      }
+    }
 
     if (event.key === "Escape" && isTurnRunning) {
       event.preventDefault();
@@ -711,6 +2389,35 @@ export function App() {
     }
   }
 
+  function acceptComposerCompletion(item: ComposerSuggestion) {
+    if (!composerCompletion) {
+      return;
+    }
+
+    const suffix = composer.slice(composerCompletion.cursor);
+    const insertText = `${item.insertText} `;
+    const nextCursor = composerCompletion.tokenStart + insertText.length;
+    const nextComposer = `${composer.slice(0, composerCompletion.tokenStart)}${insertText}${suffix}`;
+    setComposer(nextComposer);
+    setComposerCompletion(null);
+
+    if (item.type === "file" && item.path) {
+      addAttachments([
+        {
+          id: `${item.path}-${Date.now()}`,
+          type: "mention",
+          path: item.path,
+          name: item.name
+        }
+      ]);
+    }
+
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
   async function interruptTurn() {
     if (!desktopApi || !session || !activeTurnId) {
       return;
@@ -723,7 +2430,7 @@ export function App() {
         threadId: session.threadId,
         turnId: interruptedTurnId
       });
-      setActiveTurnId(null);
+      clearSessionTurnRunning(session.threadId);
       setStatus("Turn interrupted.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -747,19 +2454,19 @@ export function App() {
     <main className={`shell${isSidebarCollapsed ? " sidebarCollapsed" : ""}`}>
       <aside
         className="sidebar"
-        aria-label="Workspace and sessions"
+        aria-label={t("sessions")}
         data-collapsed={isSidebarCollapsed}
       >
         <div className="brand">
           <div className="brandMark">C</div>
           <div className="brandText">
             <h1>CodeP</h1>
-            <p>Local Codex workspace</p>
+            <p>{t("localWorkspace")}</p>
           </div>
           <button
             className="sidebarToggle"
             type="button"
-            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={isSidebarCollapsed ? t("expandSidebar") : t("collapseSidebar")}
             aria-expanded={!isSidebarCollapsed}
             onClick={() => setIsSidebarCollapsed(previous => !previous)}
           >
@@ -771,9 +2478,37 @@ export function App() {
           </button>
         </div>
 
+        <div className="collapsedFavoritesRail" aria-label={t("favoriteSessions")}>
+          {favoriteSessions.map(({ workspace: cwd, session: item }) => {
+            const iconId = sessionIconFor(
+              item.threadId,
+              sessionIconOverrides[item.threadId]
+            );
+            return (
+              <button
+                aria-label={`${t("openSession")} ${item.title}`}
+                className="collapsedSessionButton"
+                data-active={cwd === workspace && item.threadId === session?.threadId}
+                data-icon={iconId}
+                data-working={Boolean(runningTurnsBySession[item.threadId])}
+                key={item.threadId}
+                onClick={() => void openSession(item, cwd)}
+                style={sessionIconStyle(iconId)}
+                title={item.title}
+                type="button"
+              >
+                <SessionGlyph iconId={iconId} />
+                {unreadSessionIds.has(item.threadId) ? (
+                  <span className="collapsedUnreadDot" aria-hidden="true" />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+
         <section className="panel grow">
           <div className="panelHeader">
-            <h2>Sessions</h2>
+            <h2>{t("sessions")}</h2>
             <div className="panelActions">
               <button
                 className="miniButton"
@@ -781,7 +2516,7 @@ export function App() {
                 onClick={startSession}
                 disabled={!canStartSession}
               >
-                Latest
+                {t("latest")}
               </button>
               <button
                 className="miniButton primaryMiniButton"
@@ -789,48 +2524,208 @@ export function App() {
                 onClick={startNewSession}
                 disabled={connectionState !== "connected" || !workspace || isSessionOpening}
               >
-                New
+                {t("new")}
+              </button>
+              <button
+                className="miniButton"
+                type="button"
+                onClick={chooseWorkspace}
+                aria-label={t("addWorkspace")}
+              >
+                <Plus size={14} />
               </button>
             </div>
           </div>
-          {isSessionsLoading ? (
-            <p className="emptyText">Loading sessions...</p>
-          ) : sessions.length > 0 ? (
-            <div className="sessionList">
-              {sessions.map(item => (
-                <button
-                  className="sessionItem"
-                  data-active={item.threadId === session?.threadId}
-                  key={item.threadId}
-                  type="button"
-                  onClick={() => void openSession(item)}
-                >
-                  <span>{item.title}</span>
-                  <small>{sessionMeta(item)}</small>
-                </button>
-              ))}
+          <div className="sidebarTabs" role="tablist" aria-label={t("sessionViews")}>
+            <button
+              aria-selected={sidebarTab === "all"}
+              className="sidebarTab"
+              role="tab"
+              type="button"
+              onClick={() => setSidebarTab("all")}
+            >
+              {t("all")}
+            </button>
+            <button
+              aria-selected={sidebarTab === "favorites"}
+              className="sidebarTab"
+              role="tab"
+              type="button"
+              onClick={() => setSidebarTab("favorites")}
+            >
+              {t("favorites")}
+            </button>
+          </div>
+          {workspaces.length > 0 ? (
+            <div className="workspaceTree">
+              {sidebarTab === "all"
+                ? workspaces.map(cwd => {
+                    const workspaceItems = workspaceSessions[cwd] ?? [];
+                    const isCollapsed = collapsedWorkspaces.has(cwd);
+                    return (
+                      <div className="workspaceGroup" key={cwd}>
+                        <div className="workspaceNode" data-active={cwd === workspace}>
+                          <button
+                            aria-label={
+                              isCollapsed
+                                ? `Expand ${workspaceName(cwd)}`
+                                : `Collapse ${workspaceName(cwd)}`
+                            }
+                            aria-expanded={!isCollapsed}
+                            className="treeIconButton"
+                            type="button"
+                            onClick={() => toggleWorkspaceCollapsed(cwd)}
+                          >
+                            <ChevronRight
+                              size={14}
+                              className={isCollapsed ? "" : "disclosureOpen"}
+                            />
+                          </button>
+                          <button
+                            className="workspaceSelect"
+                            type="button"
+                            onClick={() => selectWorkspace(cwd)}
+                          >
+                            <FolderOpen size={15} />
+                            <span>{workspaceName(cwd)}</span>
+                            <small>{cwd}</small>
+                          </button>
+                          <WorkspaceActionMenu
+                            disabled={connectionState !== "connected" || isSessionOpening}
+                            language={language}
+                            workspaceName={workspaceName(cwd)}
+                            onNewSession={() => void startNewSessionForWorkspace(cwd)}
+                            onRemove={() => removeWorkspace(cwd)}
+                          />
+                        </div>
+                        {!isCollapsed ? (
+                          <div className="sessionChildren">
+                            {workspaceItems.length > 0 ? (
+                              workspaceItems.map(item => (
+                                <SessionTreeRow
+                                  active={
+                                    cwd === workspace &&
+                                    item.threadId === session?.threadId
+                                  }
+                                  favorite={favoriteSessionIds.has(item.threadId)}
+                                  iconId={sessionIconFor(
+                                    item.threadId,
+                                    sessionIconOverrides[item.threadId]
+                                  )}
+                                  item={item}
+                                  key={item.threadId}
+                                  language={language}
+                                  unread={unreadSessionIds.has(item.threadId)}
+                                  working={Boolean(runningTurnsBySession[item.threadId])}
+                                  onFavorite={() => toggleFavoriteSession(item.threadId)}
+                                  onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
+                                  onOpen={() => void openSession(item, cwd)}
+                                  onRename={title => void renameSession(cwd, item, title)}
+                                />
+                              ))
+                            ) : (
+                              <p className="treeEmpty">
+                                {isSessionsLoading && cwd === workspace
+                                  ? t("loadingSessions")
+                                  : t("noSessionsLoaded")}
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                : favoriteSessions.length > 0
+                  ? favoriteSessions.map(({ workspace: cwd, session: item }) => (
+                      <div className="favoriteSessionGroup" key={item.threadId}>
+                        <SessionTreeRow
+                          active={cwd === workspace && item.threadId === session?.threadId}
+                          favorite
+                          iconId={sessionIconFor(
+                            item.threadId,
+                            sessionIconOverrides[item.threadId]
+                          )}
+                          item={item}
+                          language={language}
+                          meta={`${workspaceName(cwd)} · ${sessionMeta(item)}`}
+                          unread={unreadSessionIds.has(item.threadId)}
+                          working={Boolean(runningTurnsBySession[item.threadId])}
+                          onFavorite={() => toggleFavoriteSession(item.threadId)}
+                          onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
+                          onOpen={() => void openSession(item, cwd)}
+                          onRename={title => void renameSession(cwd, item, title)}
+                        />
+                      </div>
+                    ))
+                  : (
+                      <div className="emptyTree">
+                        <p>{t("favoriteEmpty")}</p>
+                      </div>
+                    )}
             </div>
           ) : (
-            <p className="emptyText">No active session</p>
+            <div className="emptyTree">
+              <p>{t("workspaceEmpty")}</p>
+              <button className="miniButton primaryMiniButton" type="button" onClick={chooseWorkspace}>
+                {t("addWorkspace")}
+              </button>
+            </div>
           )}
         </section>
 
-        <section className="workspaceDock" aria-label="Workspace">
-          <div className="panelHeader">
-            <h2>Workspace</h2>
+        <div className="sidebarFooter">
+          <div className="accountSummary" aria-label={t("account")}>
+            <RateLimitRing
+              label={t("fiveHourLimit")}
+              shortLabel="5h"
+              value={rateLimitUsage?.primary?.leftPercent ?? null}
+              fallback={t("rateLimitUnknown")}
+            />
+            <RateLimitRing
+              label={t("weeklyLimit")}
+              shortLabel="7d"
+              value={rateLimitUsage?.secondary?.leftPercent ?? null}
+              fallback={t("rateLimitUnknown")}
+            />
           </div>
-          <button className="pathButton" type="button" onClick={chooseWorkspace}>
-            <FolderOpen size={16} />
-            <span>{shortWorkspace}</span>
-          </button>
-          {workspace ? <p className="pathFull">{workspace}</p> : null}
-        </section>
+          <div className="sidebarQuickControls">
+            <SidebarOptionMenu
+              icon={themeMode === "dark" ? <Moon size={15} /> : <Sun size={15} />}
+              label={themeMode === "dark" ? t("dark") : t("light")}
+              options={[
+                { value: "dark", label: t("dark") },
+                { value: "light", label: t("light") }
+              ]}
+              value={themeMode}
+              onChange={value => updateThemeMode(value as ThemeMode)}
+            />
+            <SidebarOptionMenu
+              icon={<Languages size={15} />}
+              label={
+                LANGUAGE_OPTIONS.find(option => option.value === language)?.label ??
+                language
+              }
+              options={LANGUAGE_OPTIONS}
+              value={language}
+              onChange={value => updateLanguage(value as UILanguage)}
+            />
+            <button
+              aria-label={t("openSettings")}
+              className="sidebarSettingsButton"
+              onClick={() => setIsSettingsOpen(true)}
+              type="button"
+            >
+              <Settings size={15} />
+              <span>{t("settings")}</span>
+            </button>
+          </div>
+        </div>
       </aside>
 
-      <section className="conversation" aria-label="Conversation">
+      <section className="conversation" aria-label={t("conversation")}>
         <header className="topbar">
           <div>
-            <h2>{session?.title ?? "New Codex session"}</h2>
+            <h2>{session?.title ?? t("newCodexSession")}</h2>
             <p>{status}</p>
           </div>
           <div className="topbarActions">
@@ -841,31 +2736,43 @@ export function App() {
         </header>
 
         <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
-          {transcript.length === 0 ? (
+          {isConversationLoading ? (
+            <div className="loadingState">
+              <span className="loadingSpinner" aria-hidden="true" />
+              <h2>{t("loadingSessionTitle")}</h2>
+              <p>{t("loadingSessionBody")}</p>
+            </div>
+          ) : transcript.length === 0 ? (
             <div className="emptyState">
-              <h2>Start a local Codex session</h2>
-              <p>Choose a workspace, then open the latest session or create a new one.</p>
+              <h2>{t("startSessionTitle")}</h2>
+              <p>{t("startSessionBody")}</p>
             </div>
           ) : (
             <div className="timeline">
               {hiddenTranscriptCount > 0 ? (
                 <div className="historyLoader">
                   <button type="button" onClick={loadOlderTranscript}>
-                    Load {Math.min(TRANSCRIPT_PAGE_SIZE, hiddenTranscriptCount)} older
-                    messages
+                    {t("loadOlderMessages", {
+                      count: Math.min(TRANSCRIPT_PAGE_SIZE, hiddenTranscriptCount)
+                    })}
                   </button>
-                  <span>{hiddenTranscriptCount} hidden</span>
+                  <span>{t("hiddenMessages", { count: hiddenTranscriptCount })}</span>
                 </div>
               ) : null}
               {visibleTranscript.map(entry => (
-                <TimelineEntry entry={entry} key={entry.id} />
+                <TimelineEntry entry={entry} key={entry.id} language={language} />
               ))}
               {isTurnRunning ? (
                 <div className="timelineItem workingItem" aria-live="polite">
                   <span className="timelineMarker" aria-hidden="true" />
                   <div className="timelineContent">
                     <div className="timelineMeta">
-                      <strong>Working</strong>
+                      <strong>{t("working")}</strong>
+                      {activeTurnElapsedMs !== null ? (
+                        <span className="turnDuration">
+                          {formatTurnDuration(activeTurnElapsedMs)}
+                        </span>
+                      ) : null}
                       {activeTurnId ? <code>{activeTurnId.slice(0, 8)}</code> : null}
                     </div>
                   </div>
@@ -878,6 +2785,7 @@ export function App() {
         <div className="composerDock">
           <InlineActionBar
             approvals={approvals}
+            language={language}
             onResolveApproval={resolveApproval}
           />
           <div
@@ -886,8 +2794,13 @@ export function App() {
           >
             <span className="statusDot" aria-hidden="true" />
             <span className="statusText">
-              {isTurnRunning ? "Working" : session ? "Ready" : "No session"}
+              {isTurnRunning ? t("working") : session ? t("ready") : t("noSession")}
             </span>
+            {visibleTurnDurationMs !== null ? (
+              <span className="turnDuration">
+                {formatTurnDuration(visibleTurnDurationMs)}
+              </span>
+            ) : null}
             {isTurnRunning ? (
               <span className="statusPulse" aria-hidden="true">
                 <span />
@@ -904,9 +2817,16 @@ export function App() {
               void sendTurn();
             }}
           >
+            {composerCompletion ? (
+              <ComposerCompletionMenu
+                completion={composerCompletion}
+                language={language}
+                onSelect={acceptComposerCompletion}
+              />
+            ) : null}
             <div className="composerMain">
               {attachments.length > 0 ? (
-                <div className="attachmentShelf" aria-label="Attached files">
+                <div className="attachmentShelf" aria-label={t("attachedFiles")}>
                   {attachments.map(attachment => (
                     <div className="attachmentChip" key={attachment.id}>
                       {attachment.previewDataUrl ? (
@@ -919,7 +2839,7 @@ export function App() {
                       <div>
                         <strong>{attachment.name}</strong>
                         <small>
-                          {attachment.type === "localImage" ? "Image" : "File mention"}
+                          {attachment.type === "localImage" ? t("image") : t("fileMention")}
                         </small>
                       </div>
                       <button
@@ -934,30 +2854,1362 @@ export function App() {
                 </div>
               ) : null}
               <textarea
-                aria-label="Message Codex"
-                placeholder="Ask Codex to inspect, edit, explain, or test this workspace"
+                ref={composerRef}
+                aria-label={t("messageCodex")}
+                placeholder={t("composerPlaceholder")}
                 value={composer}
                 disabled={session === null}
-                onChange={event => setComposer(event.target.value)}
+                onChange={event =>
+                  handleComposerChange(
+                    event.target.value,
+                    event.target.selectionStart
+                  )
+                }
                 onPaste={handleComposerPaste}
                 onKeyDown={handleComposerKeyDown}
+                onSelect={event =>
+                  updateComposerCompletion(
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart
+                  )
+                }
               />
+              <div className="composerToolbar" aria-label={t("messageCodex")}>
+                <div className="composerTools">
+                  <button
+                    aria-label={t("attachFile")}
+                    className="composerIconButton"
+                    disabled={session === null}
+                    onClick={() => void chooseAttachmentFiles()}
+                    type="button"
+                  >
+                    <Plus size={16} />
+                  </button>
+                  <span className="composerDivider" aria-hidden="true" />
+                  <button
+                    aria-label={t("searchFiles")}
+                    className="composerTextButton"
+                    disabled={session === null}
+                    onClick={() => openComposerCompletion("file")}
+                    type="button"
+                  >
+                    <AtSign size={16} />
+                    <span>{t("files")}</span>
+                  </button>
+                  <button
+                    aria-label={t("searchSkills")}
+                    className="composerTextButton"
+                    disabled={session === null}
+                    onClick={() => openComposerCompletion("skill")}
+                    type="button"
+                  >
+                    <span className="composerDollarIcon" aria-hidden="true">$</span>
+                    <span>{t("skills")}</span>
+                  </button>
+                </div>
+                <div className="composerRightTools">
+                  <span
+                    className="composerContextValue"
+                    title={contextTooltip(contextUsage, language)}
+                  >
+                    {contextLabel(contextUsage, language)}
+                  </span>
+                  <select
+                    aria-label={t("switchModel")}
+                    className="composerInlineSelect modelInlineSelect"
+                    title={t("model")}
+                    value={model}
+                    onChange={event => updateModel(event.target.value)}
+                  >
+                    {modelSelectOptions.map(option => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label={t("switchEffort")}
+                    className="composerInlineSelect effortInlineSelect"
+                    title={t("reasoningEffort")}
+                    value={modelEffort}
+                    onChange={event =>
+                      updateModelEffort(event.target.value as ModelEffort)
+                    }
+                  >
+                    {EFFORT_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>
+                        {effortLabel(option.value, language)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label={t("switchPermissions")}
+                    className="composerInlineSelect permissionsInlineSelect"
+                    title={t("permissions")}
+                    value={permissionMode}
+                    onChange={event =>
+                      updatePermissionMode(event.target.value as PermissionMode)
+                    }
+                  >
+                    {PERMISSION_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>
+                        {permissionLabel(option.value, language)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    aria-label={isTurnRunning ? t("stopTurn") : t("sendMessage")}
+                    className="sendButton"
+                    type={isTurnRunning ? "button" : "submit"}
+                    disabled={isTurnRunning ? activeTurnId === null : !canSubmit}
+                    data-mode={isTurnRunning ? "stop" : "send"}
+                    onClick={
+                      isTurnRunning
+                        ? event => {
+                            event.preventDefault();
+                            void interruptTurn();
+                          }
+                        : undefined
+                    }
+                  >
+                    {isTurnRunning ? <Square size={16} /> : <ArrowUp size={18} />}
+                  </button>
+                </div>
+              </div>
             </div>
-            <button
-              className="sendButton"
-              type="submit"
-              disabled={!canSubmit}
-              data-mode="send"
-            >
-              <Send size={16} />
-              <span>Send</span>
-            </button>
           </form>
         </div>
       </section>
 
+      {isSettingsOpen ? (
+        <SettingsModal
+          relayApiKey={relayApiKey}
+          relayDeviceId={deviceId}
+          relayEndpoint={relayEndpoint}
+          relayError={relayError}
+          relayState={relayState}
+          language={language}
+          model={model}
+          modelEffort={modelEffort}
+          modelOptions={modelSelectOptions}
+          notificationSoundFile={notificationSoundFile}
+          permissionMode={permissionMode}
+          themeMode={themeMode}
+          soundNotificationsEnabled={soundNotificationsEnabled}
+          onClose={() => setIsSettingsOpen(false)}
+          onChooseNotificationSound={() => void chooseNotificationSound()}
+          onClearNotificationSound={clearNotificationSound}
+          onLanguageChange={updateLanguage}
+          onModelChange={updateModel}
+          onModelEffortChange={updateModelEffort}
+          onPermissionModeChange={updatePermissionMode}
+          onRelayApiKeyChange={updateRelayApiKey}
+          onRelayEndpointChange={updateRelayEndpoint}
+          onSoundNotificationsEnabledChange={updateSoundNotificationsEnabled}
+          onThemeModeChange={updateThemeMode}
+        />
+      ) : null}
     </main>
   );
+}
+
+function SidebarOptionMenu({
+  icon,
+  label,
+  options,
+  value,
+  onChange
+}: {
+  icon: ReactNode;
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+
+  function closeMenu() {
+    detailsRef.current?.removeAttribute("open");
+  }
+
+  return (
+    <details className="sidebarOptionMenu" ref={detailsRef}>
+      <summary>
+        {icon}
+        <span>{label}</span>
+      </summary>
+      <div className="sidebarOptionPopover">
+        {options.map(option => (
+          <button
+            data-active={option.value === value}
+            key={option.value}
+            type="button"
+            onClick={() => {
+              onChange(option.value);
+              closeMenu();
+            }}
+          >
+            <span>{option.label}</span>
+            {option.value === value ? <Check size={13} /> : null}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function RateLimitRing({
+  label,
+  shortLabel,
+  value,
+  fallback
+}: {
+  label: string;
+  shortLabel: string;
+  value: number | null;
+  fallback: string;
+}) {
+  const percent = value === null ? 0 : value;
+  const display = value === null ? "—" : `${Math.round(value)}%`;
+  const tone =
+    value === null ? "unknown" : value <= 20 ? "low" : value <= 50 ? "medium" : "high";
+  const style = {
+    "--rate-value": `${percent * 3.6}deg`
+  } as CSSProperties;
+
+  return (
+    <div
+      aria-label={`${label}: ${value === null ? fallback : display}`}
+      className="rateLimitRing"
+      data-tone={tone}
+      role="meter"
+      aria-valuemax={100}
+      aria-valuemin={0}
+      aria-valuenow={value ?? 0}
+    >
+      <div className="rateLimitCircle" style={style}>
+        <span>{shortLabel}</span>
+      </div>
+      <strong>{display}</strong>
+    </div>
+  );
+}
+
+function WorkspaceActionMenu({
+  disabled,
+  language,
+  workspaceName,
+  onNewSession,
+  onRemove
+}: {
+  disabled: boolean;
+  language: UILanguage;
+  workspaceName: string;
+  onNewSession: () => void;
+  onRemove: () => void;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+
+  function closeMenu() {
+    detailsRef.current?.removeAttribute("open");
+  }
+
+  return (
+    <details className="workspaceActionMenu" ref={detailsRef}>
+      <summary aria-label={t("workspaceActions", { name: workspaceName })}>
+        <MoreHorizontal size={15} />
+      </summary>
+      <div className="workspaceActionPopover">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            closeMenu();
+            onNewSession();
+          }}
+        >
+          <Plus size={14} />
+          <span>{t("newSession")}</span>
+        </button>
+        <button
+          className="dangerMenuItem"
+          type="button"
+          onClick={() => {
+            closeMenu();
+            onRemove();
+          }}
+        >
+          <Trash2 size={14} />
+          <span>{t("removeWorkspace")}</span>
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function SessionTreeRow({
+  active,
+  favorite,
+  iconId,
+  item,
+  language,
+  meta,
+  unread,
+  working,
+  onFavorite,
+  onIconChange,
+  onOpen,
+  onRename
+}: {
+  active: boolean;
+  favorite: boolean;
+  iconId: SessionIconId;
+  item: SessionView;
+  language: UILanguage;
+  meta?: string;
+  unread: boolean;
+  working: boolean;
+  onFavorite: () => void;
+  onIconChange: (iconId: SessionIconId) => void;
+  onOpen: () => void;
+  onRename: (title: string) => void | Promise<void>;
+}) {
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(item.title);
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+
+  useEffect(() => {
+    if (!isRenaming) {
+      setDraftTitle(item.title);
+    }
+  }, [isRenaming, item.title]);
+
+  function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextTitle = draftTitle.trim();
+    if (nextTitle && nextTitle !== item.title) {
+      void onRename(nextTitle);
+    }
+    setIsRenaming(false);
+  }
+
+  function cancelRename() {
+    setDraftTitle(item.title);
+    setIsRenaming(false);
+  }
+
+  return (
+    <div
+      className="sessionChild"
+      data-active={active}
+      data-renaming={isRenaming}
+      data-working={working}
+    >
+      {isRenaming ? (
+        <form className="sessionRenameForm" onSubmit={submitRename}>
+          <input
+            aria-label={t("sessionName")}
+            autoFocus
+            value={draftTitle}
+            onChange={event => setDraftTitle(event.target.value)}
+            onFocus={event => event.target.select()}
+            onKeyDown={event => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+          />
+          <button aria-label={t("saveSessionName")} className="treeIconButton" type="submit">
+            <Check size={14} />
+          </button>
+          <button
+            aria-label={t("cancelRename")}
+            className="treeIconButton"
+            type="button"
+            onClick={cancelRename}
+          >
+            <X size={14} />
+          </button>
+        </form>
+      ) : (
+        <>
+          <SessionIconPicker
+            currentIconId={iconId}
+            language={language}
+            sessionTitle={item.title}
+            onIconChange={onIconChange}
+          />
+          <button className="sessionOpenButton" type="button" onClick={onOpen}>
+            <ChevronRight size={13} />
+            <span className="sessionTitleText">{item.title}</span>
+            <small>{meta ?? sessionMeta(item)}</small>
+            {unread ? <span className="sessionUnreadDot" aria-label={t("unreadTurn")} /> : null}
+          </button>
+          <button
+            aria-label={
+              favorite
+                ? t("unfavoriteSession", { title: item.title })
+                : t("favoriteSession", { title: item.title })
+            }
+            className="treeIconButton"
+            data-active={favorite}
+            type="button"
+            onClick={onFavorite}
+          >
+            <Star size={14} fill={favorite ? "currentColor" : "none"} />
+          </button>
+          <button
+            aria-label={t("renameSession", { title: item.title })}
+            className="treeIconButton"
+            type="button"
+            onClick={() => setIsRenaming(true)}
+          >
+            <Pencil size={14} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SessionIconPicker({
+  currentIconId,
+  language,
+  sessionTitle,
+  onIconChange
+}: {
+  currentIconId: SessionIconId;
+  language: UILanguage;
+  sessionTitle: string;
+  onIconChange: (iconId: SessionIconId) => void;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+
+  return (
+    <details className="sessionIconPicker" ref={detailsRef}>
+      <summary
+        aria-label={t("changeIcon", { title: sessionTitle })}
+        style={sessionIconStyle(currentIconId)}
+      >
+        <SessionGlyph iconId={currentIconId} />
+      </summary>
+      <div className="sessionIconPopover">
+        {SESSION_ICON_IDS.map(iconId => (
+          <button
+            aria-label={t("useIcon", { icon: iconId })}
+            data-active={iconId === currentIconId}
+            key={iconId}
+            style={sessionIconStyle(iconId)}
+            onClick={() => {
+              onIconChange(iconId);
+              detailsRef.current?.removeAttribute("open");
+            }}
+            type="button"
+          >
+            <SessionGlyph iconId={iconId} />
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function SessionGlyph({ iconId }: { iconId: SessionIconId }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="sessionGlyph"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      {sessionGlyphPaths(iconId)}
+    </svg>
+  );
+}
+
+function sessionGlyphPaths(iconId: SessionIconId): ReactNode {
+  const common = {
+    stroke: "currentColor",
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    strokeWidth: 1.8
+  };
+
+  switch (iconId) {
+    case "terminal":
+      return (
+        <>
+          <path {...common} d="M4 6.5h16v11H4z" />
+          <path {...common} d="m7 10 2.4 2L7 14" />
+          <path {...common} d="M11.5 14h4" />
+        </>
+      );
+    case "code":
+      return (
+        <>
+          <path {...common} d="m9 8-4 4 4 4" />
+          <path {...common} d="m15 8 4 4-4 4" />
+          <path {...common} d="m13 6-2 12" />
+        </>
+      );
+    case "branch":
+      return (
+        <>
+          <circle {...common} cx="7" cy="6" r="2.2" />
+          <circle {...common} cx="17" cy="18" r="2.2" />
+          <circle {...common} cx="7" cy="18" r="2.2" />
+          <path {...common} d="M7 8.2v7.6" />
+          <path {...common} d="M9.1 6.8c4.4.8 7.2 3.7 7.7 8.9" />
+        </>
+      );
+    case "bug":
+      return (
+        <>
+          <path {...common} d="M8 10.5h8v5a4 4 0 0 1-8 0z" />
+          <path {...common} d="M9 8a3 3 0 0 1 6 0v2.5H9z" />
+          <path {...common} d="M4.5 12H8M16 12h3.5M5.5 17H8M16 17h2.5" />
+        </>
+      );
+    case "rocket":
+      return (
+        <>
+          <path {...common} d="M12 14.5 9.5 12 13 6.5 18 4l-2.5 5z" />
+          <path {...common} d="M9.5 12 6 12.5l2 2M12 14.5l-.5 3.5-2-2" />
+          <path {...common} d="M6.5 17.5 4.5 19.5" />
+        </>
+      );
+    case "database":
+      return (
+        <>
+          <ellipse {...common} cx="12" cy="6.5" rx="6" ry="2.5" />
+          <path {...common} d="M6 6.5v10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-10" />
+          <path {...common} d="M6 11.5c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5" />
+        </>
+      );
+    case "globe":
+      return (
+        <>
+          <circle {...common} cx="12" cy="12" r="7" />
+          <path {...common} d="M5.5 12h13M12 5c2 2 3 4.3 3 7s-1 5-3 7M12 5c-2 2-3 4.3-3 7s1 5 3 7" />
+        </>
+      );
+    case "palette":
+      return (
+        <>
+          <path {...common} d="M12 4.5a7.5 7.5 0 0 0 0 15h1.2a1.7 1.7 0 0 0 1.2-2.9l-.2-.2a1.4 1.4 0 0 1 1-2.4H16a3.5 3.5 0 0 0 0-7.1A8 8 0 0 0 12 4.5Z" />
+          <circle cx="8.5" cy="10" r="1" fill="currentColor" />
+          <circle cx="11.5" cy="8" r="1" fill="currentColor" />
+          <circle cx="8.8" cy="13.5" r="1" fill="currentColor" />
+        </>
+      );
+    case "shield":
+      return (
+        <>
+          <path {...common} d="M12 4.5 18 7v4.6c0 3.7-2.3 6.1-6 7.9-3.7-1.8-6-4.2-6-7.9V7z" />
+          <path {...common} d="m9.5 12.2 1.8 1.8 3.5-4" />
+        </>
+      );
+    case "test":
+      return (
+        <>
+          <path {...common} d="M9 4.8h6M10 5v5.2l-4 6.7A1.5 1.5 0 0 0 7.3 19h9.4a1.5 1.5 0 0 0 1.3-2.1l-4-6.7V5" />
+          <path {...common} d="M8.4 15h7.2" />
+        </>
+      );
+    case "doc":
+      return (
+        <>
+          <path {...common} d="M7 4.5h6l4 4V19H7z" />
+          <path {...common} d="M13 4.5V9h4" />
+          <path {...common} d="M9.5 13h5M9.5 16h3.5" />
+        </>
+      );
+    case "bot":
+      return (
+        <>
+          <rect {...common} x="6" y="8" width="12" height="9" rx="3" />
+          <path {...common} d="M12 8V5.5M9 5.5h6" />
+          <circle cx="10" cy="12.5" r="1" fill="currentColor" />
+          <circle cx="14" cy="12.5" r="1" fill="currentColor" />
+          <path {...common} d="M10 15h4" />
+        </>
+      );
+    default:
+      return generatedSessionGlyph(iconId, common);
+  }
+}
+
+function generatedSessionGlyph(
+  iconId: SessionIconId,
+  common: {
+    stroke: string;
+    strokeLinecap: "round";
+    strokeLinejoin: "round";
+    strokeWidth: number;
+  }
+): ReactNode {
+  const index = SESSION_ICON_IDS.indexOf(iconId);
+  switch (index % 10) {
+    case 0:
+      return (
+        <>
+          <path {...common} d="M12 4.5 14 9l4.8.4-3.7 3.1 1.2 4.7L12 14.7l-4.3 2.5 1.2-4.7-3.7-3.1L10 9z" />
+          <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+        </>
+      );
+    case 1:
+      return (
+        <>
+          <circle {...common} cx="12" cy="12" r="7" />
+          <path {...common} d="m12 8 2.5 4-2.5 4-2.5-4z" />
+          <path {...common} d="M12 5v3M12 16v3M5 12h3M16 12h3" />
+        </>
+      );
+    case 2:
+      return (
+        <>
+          <path {...common} d="M7 8.5 12 5l5 3.5v7L12 19l-5-3.5z" />
+          <path {...common} d="M7 8.5 12 12l5-3.5M12 12v7" />
+        </>
+      );
+    case 3:
+      return (
+        <>
+          <path {...common} d="M5 17.5h14" />
+          <path {...common} d="M7 15v-3M12 15V7M17 15v-6" />
+          <path {...common} d="m8.5 8.5 3.5-3 3.5 2" />
+        </>
+      );
+    case 4:
+      return (
+        <>
+          <path {...common} d="m13 4-7 9h5l-1 7 8-10h-5z" />
+          <path {...common} d="M7 19h3" />
+        </>
+      );
+    case 5:
+      return (
+        <>
+          <circle {...common} cx="9" cy="10" r="3" />
+          <path {...common} d="M11.2 12.2 17 18" />
+          <path {...common} d="m15 18 3-3" />
+        </>
+      );
+    case 6:
+      return (
+        <>
+          <path {...common} d="M7 16.5h9.5a3 3 0 0 0 .6-5.9 5 5 0 0 0-9.6-1.8A3.9 3.9 0 0 0 7 16.5Z" />
+          <path {...common} d="M10 19h4" />
+        </>
+      );
+    case 7:
+      return (
+        <>
+          <rect {...common} x="7" y="7" width="10" height="10" rx="2" />
+          <path {...common} d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3" />
+          <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+        </>
+      );
+    case 8:
+      return (
+        <>
+          <path {...common} d="M6.5 8.5 12 5l5.5 3.5v7L12 19l-5.5-3.5z" />
+          <path {...common} d="M9 12h6M12 9v6" />
+        </>
+      );
+    default:
+      return (
+        <>
+          <path {...common} d="M5 12h4l2-4 2 8 2-4h4" />
+          <path {...common} d="M6.5 18.5 17.5 5.5" />
+        </>
+      );
+  }
+}
+
+function SettingsModal({
+  model,
+  modelEffort,
+  modelOptions,
+  notificationSoundFile,
+  permissionMode,
+  relayApiKey,
+  relayDeviceId,
+  relayEndpoint,
+  relayError,
+  relayState,
+  language,
+  soundNotificationsEnabled,
+  themeMode,
+  onClose,
+  onChooseNotificationSound,
+  onClearNotificationSound,
+  onLanguageChange,
+  onModelChange,
+  onModelEffortChange,
+  onPermissionModeChange,
+  onRelayApiKeyChange,
+  onRelayEndpointChange,
+  onSoundNotificationsEnabledChange,
+  onThemeModeChange
+}: {
+  model: string;
+  modelEffort: ModelEffort;
+  modelOptions: ModelOption[];
+  notificationSoundFile: NotificationSoundFile | null;
+  permissionMode: PermissionMode;
+  relayApiKey: string;
+  relayDeviceId: string;
+  relayEndpoint: string;
+  relayError: string;
+  relayState: RelayConnectionState;
+  language: UILanguage;
+  soundNotificationsEnabled: boolean;
+  themeMode: ThemeMode;
+  onClose: () => void;
+  onChooseNotificationSound: () => void;
+  onClearNotificationSound: () => void;
+  onLanguageChange: (value: UILanguage) => void;
+  onModelChange: (value: string) => void;
+  onModelEffortChange: (value: ModelEffort) => void;
+  onPermissionModeChange: (value: PermissionMode) => void;
+  onRelayApiKeyChange: (value: string) => void;
+  onRelayEndpointChange: (value: string) => void;
+  onSoundNotificationsEnabledChange: (value: boolean) => void;
+  onThemeModeChange: (value: ThemeMode) => void;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+
+  return (
+    <div
+      className="modalBackdrop"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        aria-labelledby="settings-title"
+        aria-modal="true"
+        className="settingsModal"
+        role="dialog"
+      >
+        <header className="modalHeader">
+          <div>
+            <h2 id="settings-title">{t("settings")}</h2>
+            <p>{t("settingsIntro")}</p>
+          </div>
+          <button
+            aria-label={t("closeSettings")}
+            className="iconOnlyButton"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="settingsModalBody">
+          <section className="settingsSection" aria-labelledby="appearance-settings-title">
+            <div>
+              <h3 id="appearance-settings-title">{t("appearance")}</h3>
+              <p>{t("appearanceIntro")}</p>
+            </div>
+
+            <label className="configField">
+              <span>{t("theme")}</span>
+              <select
+                value={themeMode}
+                onChange={event => onThemeModeChange(event.target.value as ThemeMode)}
+              >
+                <option value="dark">{t("dark")}</option>
+                <option value="light">{t("light")}</option>
+              </select>
+            </label>
+
+            <label className="configField">
+              <span>{t("language")}</span>
+              <select
+                value={language}
+                onChange={event => onLanguageChange(event.target.value as UILanguage)}
+              >
+                {LANGUAGE_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
+
+          <section className="settingsSection" aria-labelledby="notification-settings-title">
+            <div>
+              <h3 id="notification-settings-title">{t("notifications")}</h3>
+              <p>{t("notificationsIntro")}</p>
+            </div>
+
+            <label className="toggleField">
+              <input
+                checked={soundNotificationsEnabled}
+                onChange={event =>
+                  onSoundNotificationsEnabledChange(event.target.checked)
+                }
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("soundOnTurnCompletion")}</strong>
+                <small>{t("soundOnTurnCompletionHelp")}</small>
+              </span>
+            </label>
+
+            <div className="soundFilePicker">
+              <div>
+                <span>{t("audioFile")}</span>
+                <strong>{notificationSoundFile?.name ?? t("defaultTone")}</strong>
+                {notificationSoundFile ? <small>{notificationSoundFile.path}</small> : null}
+              </div>
+              <div className="soundFileActions">
+                <button className="miniButton" type="button" onClick={onChooseNotificationSound}>
+                  {t("chooseFile")}
+                </button>
+                <button
+                  className="miniButton"
+                  disabled={!notificationSoundFile}
+                  type="button"
+                  onClick={onClearNotificationSound}
+                >
+                  {t("clear")}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="settingsSection" aria-labelledby="model-settings-title">
+            <div>
+              <h3 id="model-settings-title">{t("model")}</h3>
+              <p>{t("modelIntro")}</p>
+            </div>
+
+            <label className="configField">
+              <span>{t("model")}</span>
+              <select
+                value={model}
+                onChange={event => onModelChange(event.target.value)}
+              >
+                {modelOptions.map(option => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="configField">
+              <span>{t("reasoningLevel")}</span>
+              <select
+                value={modelEffort}
+                onChange={event =>
+                  onModelEffortChange(event.target.value as ModelEffort)
+                }
+              >
+                {EFFORT_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {effortLabel(option.value, language)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="permissionDescription">
+              <strong>{effortLabel(modelEffort, language)}</strong>
+              <span>{effortDescription(modelEffort, language)}</span>
+            </div>
+          </section>
+
+          <section className="settingsSection" aria-labelledby="permissions-settings-title">
+            <div>
+              <h3 id="permissions-settings-title">{t("permissions")}</h3>
+              <p>{t("permissionsIntro")}</p>
+            </div>
+
+            <label className="configField">
+              <span>{t("defaultPermissions")}</span>
+              <select
+                value={permissionMode}
+                onChange={event =>
+                  onPermissionModeChange(event.target.value as PermissionMode)
+                }
+              >
+                {PERMISSION_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {permissionLabel(option.value, language)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="permissionDescription">
+              <strong>{permissionLabel(permissionMode, language)}</strong>
+              <span>{permissionDescription(permissionMode, language)}</span>
+            </div>
+          </section>
+
+          <section className="settingsSection" aria-labelledby="relay-settings-title">
+            <div>
+              <h3 id="relay-settings-title">{t("relay")}</h3>
+              <p>{t("relayIntro")}</p>
+            </div>
+
+            <label className="configField">
+              <span>{t("endpoint")}</span>
+              <input
+                autoCapitalize="none"
+                autoCorrect="off"
+                onChange={event => onRelayEndpointChange(event.target.value)}
+                placeholder="ws://server:8787"
+                spellCheck={false}
+                value={relayEndpoint}
+              />
+            </label>
+
+            <label className="configField">
+              <span>{t("apiKey")}</span>
+              <input
+                autoCapitalize="none"
+                autoCorrect="off"
+                onChange={event => onRelayApiKeyChange(event.target.value)}
+                placeholder="cp_..."
+                spellCheck={false}
+                type="password"
+                value={relayApiKey}
+              />
+            </label>
+          </section>
+
+          <section className="settingsSection" aria-labelledby="relay-status-title">
+            <div>
+              <h3 id="relay-status-title">{t("status")}</h3>
+              <p>
+                {relayApiKey
+                  ? relayState === "connected"
+                    ? t("relayConnected")
+                    : relayError || t("relayConnecting")
+                  : t("relayMissing")}
+              </p>
+            </div>
+            <div className="settingsSummary">
+              <span>{t("endpoint")}</span>
+              <code>{relayEndpoint || t("notSet")}</code>
+              <span>{t("deviceId")}</span>
+              <code>{relayDeviceId}</code>
+              <span>{t("desktopUrl")}</span>
+              <code>
+                {relayEndpoint && relayApiKey
+                  ? relayWebSocketURL(relayEndpoint, "desktop", relayDeviceId, "***")
+                  : t("notReady")}
+              </code>
+              <span>{t("apiKey")}</span>
+              <strong>{relayApiKey ? t("saved") : t("missing")}</strong>
+              <span>{t("connection")}</span>
+              <strong>{relayState}</strong>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function storedDeviceId(): string {
+  const existing = window.localStorage.getItem(RELAY_DEVICE_ID_STORAGE_KEY);
+  if (existing) {
+    return existing;
+  }
+  const next =
+    typeof crypto.randomUUID === "function"
+      ? `desktop-${crypto.randomUUID()}`
+      : `desktop-${Date.now().toString(36)}`;
+  window.localStorage.setItem(RELAY_DEVICE_ID_STORAGE_KEY, next);
+  return next;
+}
+
+function readSavedPermissionMode(): PermissionMode {
+  const saved = window.localStorage.getItem(PERMISSIONS_STORAGE_KEY);
+  if (isPermissionMode(saved)) {
+    return saved;
+  }
+  if (saved === "never" || saved === "danger-full-access") {
+    return "full-access";
+  }
+  if (saved === "on-request" || saved === "on-failure" || saved === "untrusted") {
+    return "default";
+  }
+  return "default";
+}
+
+function readSavedThemeMode(): ThemeMode {
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === "light" ? "light" : "dark";
+}
+
+function readSavedLanguage(): UILanguage {
+  const saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  return saved === "en" || saved === "zh-CN" ? saved : "zh-CN";
+}
+
+function readSavedModel(): string {
+  return window.localStorage.getItem(MODEL_STORAGE_KEY) ?? "gpt-5.5";
+}
+
+function readSavedModelEffort(): ModelEffort {
+  const saved = window.localStorage.getItem(MODEL_EFFORT_STORAGE_KEY);
+  return isModelEffort(saved) ? saved : "high";
+}
+
+function readSavedNotificationSoundFile(): NotificationSoundFile | null {
+  try {
+    const raw = window.localStorage.getItem(NOTIFICATION_SOUND_FILE_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    const record = asRecord(parsed);
+    const file = {
+      path: stringOrUndefined(record.path),
+      url: stringOrUndefined(record.url),
+      name: stringOrUndefined(record.name)
+    };
+    if (file.path && file.url && file.name) {
+      return file as NotificationSoundFile;
+    }
+  } catch {
+    // Ignore malformed localStorage.
+  }
+  return null;
+}
+
+async function playFallbackNotificationTone(): Promise<void> {
+  const audioContext = new AudioContext();
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.value = 880;
+  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.22);
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + 0.24);
+  await new Promise<void>(resolve => {
+    oscillator.addEventListener("ended", () => resolve(), { once: true });
+  });
+  await audioContext.close();
+}
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === "default" || value === "auto-review" || value === "full-access";
+}
+
+function isModelEffort(value: unknown): value is ModelEffort {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
+
+function permissionLabel(value: PermissionMode, language: UILanguage = "en"): string {
+  if (value === "default") {
+    return textFor(language, "defaultPermissionLabel");
+  }
+  if (value === "auto-review") {
+    return textFor(language, "autoReviewPermissionLabel");
+  }
+  return textFor(language, "fullAccessPermissionLabel");
+}
+
+function permissionDescription(value: PermissionMode, language: UILanguage = "en"): string {
+  if (value === "default") {
+    return textFor(language, "defaultPermissionDescription");
+  }
+  if (value === "auto-review") {
+    return textFor(language, "autoReviewPermissionDescription");
+  }
+  return textFor(language, "fullAccessPermissionDescription");
+}
+
+function effortLabel(value: ModelEffort, language: UILanguage = "en"): string {
+  if (value === "low") {
+    return textFor(language, "effortLowLabel");
+  }
+  if (value === "medium") {
+    return textFor(language, "effortMediumLabel");
+  }
+  if (value === "high") {
+    return textFor(language, "effortHighLabel");
+  }
+  return textFor(language, "effortXHighLabel");
+}
+
+function effortDescription(value: ModelEffort, language: UILanguage = "en"): string {
+  if (value === "low") {
+    return textFor(language, "effortLowDescription");
+  }
+  if (value === "medium") {
+    return textFor(language, "effortMediumDescription");
+  }
+  if (value === "high") {
+    return textFor(language, "effortHighDescription");
+  }
+  return textFor(language, "effortXHighDescription");
+}
+
+function codexModelOptions(model: string, effort: ModelEffort): {
+  model: string;
+  effort: ModelEffort;
+} {
+  return { model, effort };
+}
+
+function contextUsageFromNotification(params: unknown): ContextUsage | null {
+  const tokenUsage = asRecord(asRecord(params).tokenUsage);
+  const current = asRecord(tokenUsage.last);
+  const fallbackTotal = asRecord(tokenUsage.total);
+  const usedTokens =
+    numberOrNull(current.totalTokens) ?? numberOrNull(fallbackTotal.totalTokens);
+  const contextWindow = numberOrNull(tokenUsage.modelContextWindow);
+  if (usedTokens === null) {
+    return null;
+  }
+  return { usedTokens, contextWindow };
+}
+
+function rateLimitUsageFromUnknown(value: unknown): RateLimitUsage | null {
+  const rateLimits = findRateLimitsRecord(value, 0);
+  if (!rateLimits) {
+    return null;
+  }
+
+  const primary = rateLimitWindowFromRecord(asRecord(rateLimits.primary));
+  const secondary = rateLimitWindowFromRecord(asRecord(rateLimits.secondary));
+  if (!primary && !secondary) {
+    return null;
+  }
+
+  return { primary, secondary };
+}
+
+function findRateLimitsRecord(
+  value: unknown,
+  depth: number
+): Record<string, unknown> | null {
+  if (depth > 4) {
+    return null;
+  }
+
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) {
+    return null;
+  }
+
+  const direct =
+    asRecord(record.rateLimits).primary || asRecord(record.rateLimits).secondary
+      ? asRecord(record.rateLimits)
+      : asRecord(record.rate_limits).primary || asRecord(record.rate_limits).secondary
+        ? asRecord(record.rate_limits)
+        : null;
+  if (direct) {
+    return direct;
+  }
+
+  if (record.primary || record.secondary) {
+    return record;
+  }
+
+  for (const child of Object.values(record)) {
+    const found = findRateLimitsRecord(child, depth + 1);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function rateLimitWindowFromRecord(
+  record: Record<string, unknown>
+): RateLimitWindowUsage | null {
+  const remainingPercent = firstNumber(
+    record.remaining_percent,
+    record.remainingPercent,
+    record.left_percent,
+    record.leftPercent
+  );
+  if (remainingPercent !== null) {
+    return { leftPercent: clampPercent(remainingPercent) };
+  }
+
+  const usedPercent = firstNumber(record.used_percent, record.usedPercent);
+  if (usedPercent === null) {
+    return null;
+  }
+
+  return { leftPercent: clampPercent(100 - usedPercent) };
+}
+
+function firstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const number = numberOrNull(value);
+    if (number !== null) {
+      return number;
+    }
+  }
+  return null;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function contextLabel(usage: ContextUsage | null, language: UILanguage = "en"): string {
+  if (!usage) {
+    return textFor(language, "contextUnknown");
+  }
+  if (usage.contextWindow && usage.contextWindow > 0) {
+    const remaining = Math.max(usage.contextWindow - usage.usedTokens, 0);
+    return textFor(language, "contextLeft", { value: formatTokenCount(remaining) });
+  }
+  return textFor(language, "contextUsed", { value: formatTokenCount(usage.usedTokens) });
+}
+
+function contextTooltip(usage: ContextUsage | null, language: UILanguage = "en"): string {
+  if (!usage) {
+    return textFor(language, "contextUnknownTooltip");
+  }
+  if (usage.contextWindow && usage.contextWindow > 0) {
+    const remaining = Math.max(usage.contextWindow - usage.usedTokens, 0);
+    const percent = Math.round((remaining / usage.contextWindow) * 100);
+    return textFor(language, "contextRemainingTooltip", {
+      remaining: formatTokenCount(remaining),
+      total: formatTokenCount(usage.contextWindow),
+      percent
+    });
+  }
+  return textFor(language, "contextUsedTooltip", {
+    value: formatTokenCount(usage.usedTokens)
+  });
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (value >= 1000) {
+    return `${Math.round(value / 100) / 10}K`;
+  }
+  return String(value);
+}
+
+function formatTurnDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(Math.floor(milliseconds / 1000), 0);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function codexPermissionOptions(value: PermissionMode): {
+  approvalPolicy: string;
+  approvalsReviewer: string;
+  permissionProfile: string;
+} {
+  if (value === "full-access") {
+    return {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      permissionProfile: "full-access"
+    };
+  }
+
+  return {
+    approvalPolicy: "on-request",
+    approvalsReviewer: value === "auto-review" ? "auto-reviewer" : "user",
+    permissionProfile: "workspace-write"
+  };
+}
+
+function relayWebSocketURL(
+  endpoint: string,
+  role: "desktop" | "client",
+  deviceId: string,
+  apiKey: string
+): string {
+  const base = endpoint.trim().replace(/\/+$/, "");
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}/ws/${role}${separator}device_id=${encodeURIComponent(
+    deviceId
+  )}&api_key=${encodeURIComponent(apiKey)}`;
+}
+
+function parseRelayEnvelope(data: unknown): RemoteCommandEnvelope | null {
+  if (typeof data !== "string") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(data) as RemoteCommandEnvelope;
+    return typeof parsed.type === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function validRemoteAttachments(value: unknown): RemoteAttachmentInput[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is RemoteAttachmentInput => {
+    const record = asRecord(item);
+    return (
+      record.kind === "image" &&
+      typeof record.name === "string" &&
+      typeof record.mimeType === "string" &&
+      record.mimeType.startsWith("image/") &&
+      typeof record.dataUrl === "string" &&
+      record.dataUrl.startsWith("data:image/")
+    );
+  });
+}
+
+function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMessage {
+  if (entry.role === "user") {
+    return {
+      id: entry.id,
+      role: "user",
+      text: entry.text
+    };
+  }
+  if (entry.role === "assistant") {
+    return {
+      id: entry.id,
+      role: "codex",
+      text: entry.text,
+      meta: entry.meta
+    };
+  }
+  return {
+    id: entry.id,
+    role: "event",
+    text: entry.text,
+    meta: roleLabel(entry.role)
+  };
 }
 
 function buildTurnInput(text: string, attachments: ComposerAttachment[]): UserInput[] {
@@ -965,7 +4217,7 @@ function buildTurnInput(text: string, attachments: ComposerAttachment[]): UserIn
     text.length > 0
       ? text
       : attachments.some(attachment => attachment.type === "localImage")
-        ? "Please inspect the attached image."
+        ? `Please inspect the attached image${attachments.length === 1 ? "" : "s"}.`
         : "Please inspect the attached file.";
   const input: UserInput[] = [
     {
@@ -1018,6 +4270,24 @@ function shouldHandleAttachmentPaste(data: DataTransfer): boolean {
     });
 }
 
+function activeComposerTrigger(
+  value: string,
+  cursor: number
+): { mode: ComposerCompletionMode; query: string; tokenStart: number } | null {
+  const prefix = value.slice(0, cursor);
+  const match = /(^|\s)([@$])([^\s@$]*)$/.exec(prefix);
+  if (!match) {
+    return null;
+  }
+
+  const tokenStart = match.index + match[1].length;
+  return {
+    mode: match[2] === "@" ? "file" : "skill",
+    query: match[3],
+    tokenStart
+  };
+}
+
 function hasNormalTextPaste(data: DataTransfer): boolean {
   const text = data.getData("text/plain").trim();
   if (text.length === 0) {
@@ -1052,13 +4322,65 @@ function userTranscriptText(text: string, attachments: ComposerAttachment[]): st
   return `${body}\n\nAttachments:\n${attachmentLines.join("\n")}`;
 }
 
-function TimelineEntry({ entry }: { entry: TranscriptEntry }) {
+function ComposerCompletionMenu({
+  completion,
+  language,
+  onSelect
+}: {
+  completion: ComposerCompletionState;
+  language: UILanguage;
+  onSelect: (item: ComposerSuggestion) => void;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+  const emptyText =
+    completion.mode === "file" ? t("noMatchingFiles") : t("noMatchingSkills");
+  return (
+    <div className="completionMenu" role="listbox" aria-label={t("messageCodex")}>
+      {completion.loading && completion.items.length === 0 ? (
+        <div className="completionEmpty">{t("searching")}</div>
+      ) : completion.items.length === 0 ? (
+        <div className="completionEmpty">{emptyText}</div>
+      ) : (
+        completion.items.map((item, index) => (
+          <button
+            aria-selected={index === completion.selectedIndex}
+            className="completionItem"
+            key={item.id}
+            onMouseDown={event => {
+              event.preventDefault();
+              onSelect(item);
+            }}
+            role="option"
+            type="button"
+          >
+            <span className="completionLabel">
+              {completion.mode === "skill" ? item.label : item.label}
+            </span>
+            <span className="completionDetail">
+              {completion.mode === "skill" ? "[Skill] " : ""}
+              {item.detail}
+            </span>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
+function TimelineEntry({
+  entry,
+  language
+}: {
+  entry: TranscriptEntry;
+  language: UILanguage;
+}) {
   return (
     <article className="timelineItem" data-role={entry.role}>
       <span className="timelineMarker" aria-hidden="true" />
       <div className="timelineContent">
         <div className="timelineMeta">
-          <strong>{roleLabel(entry.role)}</strong>
+          <strong>{roleLabel(entry.role, language)}</strong>
           {entry.meta ? <code>{entry.meta}</code> : null}
         </div>
         <MarkdownContent text={entry.text || "..."} />
@@ -1129,6 +4451,7 @@ function diffLineKind(line: string): "add" | "remove" | "hunk" | "meta" | "conte
 
 function InlineActionBar(props: {
   approvals: ApprovalEntry[];
+  language: UILanguage;
   onResolveApproval: (
     approval: ApprovalEntry,
     decision: "accept" | "decline" | "cancel"
@@ -1137,6 +4460,8 @@ function InlineActionBar(props: {
   if (props.approvals.length === 0) {
     return null;
   }
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(props.language, key, values);
 
   return (
     <div className="inlineActionBar">
@@ -1153,7 +4478,7 @@ function InlineActionBar(props: {
               onClick={() => void props.onResolveApproval(approval, "accept")}
             >
               <Check size={14} />
-              <span>Accept</span>
+              <span>{t("accept")}</span>
             </button>
             <button
               className="declineButton"
@@ -1161,7 +4486,7 @@ function InlineActionBar(props: {
               onClick={() => void props.onResolveApproval(approval, "decline")}
             >
               <X size={14} />
-              <span>Decline</span>
+              <span>{t("decline")}</span>
             </button>
           </div>
         </div>
@@ -1339,36 +4664,36 @@ function systemEntry(text: string): TranscriptEntry {
   };
 }
 
-function roleLabel(role: TranscriptEntry["role"]): string {
+function roleLabel(role: TranscriptEntry["role"], language: UILanguage = "en"): string {
   switch (role) {
     case "assistant":
-      return "Codex";
+      return textFor(language, "roleCodex");
     case "user":
-      return "You";
+      return textFor(language, "roleYou");
     case "system":
-      return "System";
+      return textFor(language, "roleSystem");
     case "turn":
-      return "Turn";
+      return textFor(language, "roleTurn");
     case "command":
-      return "Ran";
+      return textFor(language, "roleRan");
     case "commandOutput":
-      return "Output";
+      return textFor(language, "roleOutput");
     case "tool":
-      return "Tool";
+      return textFor(language, "roleTool");
     case "edited":
-      return "Edited";
+      return textFor(language, "roleEdited");
     case "viewedImage":
-      return "Viewed Image";
+      return textFor(language, "roleViewedImage");
     case "interaction":
-      return "Interacted";
+      return textFor(language, "roleInteracted");
     case "search":
-      return "Search";
+      return textFor(language, "roleSearch");
     case "plan":
-      return "Plan";
+      return textFor(language, "rolePlan");
     case "diff":
-      return "Diff";
+      return textFor(language, "roleDiff");
     case "approval":
-      return "Approval";
+      return textFor(language, "roleApproval");
   }
 }
 
@@ -1473,6 +4798,21 @@ function timelineEntryFromRawNotification(
   }
 
   return null;
+}
+
+function threadIdFromRawNotification(
+  event: Extract<CodexAdapterEvent, { type: "raw.notification" }>
+): string | null {
+  const params = asRecord(event.raw.params);
+  const item = asRecord(params.item);
+  const thread = asRecord(params.thread);
+  return (
+    stringOrUndefined(params.threadId) ??
+    stringOrUndefined(item.threadId) ??
+    stringOrUndefined(thread.id) ??
+    stringOrUndefined(thread.threadId) ??
+    null
+  );
 }
 
 function eventSummary(event: CodexAdapterEvent): string {
@@ -1822,6 +5162,10 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -1842,6 +5186,102 @@ function sessionMeta(session: SessionView): string {
   }
   const date = new Date(session.updatedAt * 1000);
   return `${prefix} · ${date.toLocaleString()}`;
+}
+
+function sessionIconFor(threadId: string, override: string | undefined): SessionIconId {
+  if (isSessionIconId(override)) {
+    return override;
+  }
+  const seed = Array.from(threadId).reduce((sum, character) => {
+    return sum + character.charCodeAt(0);
+  }, 0);
+  return SESSION_ICON_IDS[seed % SESSION_ICON_IDS.length];
+}
+
+function isSessionIconId(value: unknown): value is SessionIconId {
+  return typeof value === "string" && SESSION_ICON_IDS.includes(value as SessionIconId);
+}
+
+function sessionIconStyle(iconId: SessionIconId): CSSProperties {
+  const index = SESSION_ICON_IDS.indexOf(iconId);
+  const hue = (index * 41 + 12) % 360;
+  return {
+    "--session-icon-bg": `hsl(${hue} 70% 18%)`,
+    "--session-icon-fg": `hsl(${hue} 95% 74%)`,
+    "--session-icon-soft": `hsl(${hue} 58% 30%)`
+  } as CSSProperties;
+}
+
+function workspaceName(workspace: string): string {
+  const normalized = workspace.replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).at(-1) || workspace;
+}
+
+function readSavedWorkspaces(): string[] {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACES_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(item => typeof item === "string" && item.length > 0);
+    }
+  } catch {
+    // Ignore malformed localStorage.
+  }
+
+  const lastWorkspace = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+  return lastWorkspace ? [lastWorkspace] : [];
+}
+
+function saveWorkspaces(workspaces: string[]): void {
+  window.localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(workspaces));
+}
+
+function readStringList(key: string): string[] {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(item => typeof item === "string" && item.length > 0);
+    }
+  } catch {
+    // Ignore malformed localStorage.
+  }
+  return [];
+}
+
+function saveStringList(key: string, values: string[]): void {
+  window.localStorage.setItem(key, JSON.stringify(values));
+}
+
+function readStringMap(key: string): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return Object.fromEntries(
+        Object.entries(parsed).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[0] === "string" &&
+            typeof entry[1] === "string" &&
+            entry[1].length > 0
+        )
+      );
+    }
+  } catch {
+    // Ignore malformed localStorage.
+  }
+  return {};
+}
+
+function saveStringMap(key: string, values: Record<string, string>): void {
+  window.localStorage.setItem(key, JSON.stringify(values));
+}
+
+function upsertWorkspace(workspaces: string[], workspace: string): string[] {
+  return [
+    workspace,
+    ...workspaces.filter(item => item !== workspace)
+  ];
 }
 
 function readSavedSession(workspace: string): SessionView | null {

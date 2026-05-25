@@ -10,6 +10,10 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:mobile": "npm run dev -w @codep/mobile -- --port 5175",
+    "dev:mobile:lan": "npm run dev:mobile",
+    "dev:desktop": "npm run dev:vite -w @codep/desktop -- --port 5174",
+    "dev:relay": "cd services/relay && go run . -addr 0.0.0.0:8787",
     "probe:adapter": "npm --workspace @codep/codex-adapter run probe --"
   },
   "devDependencies": {

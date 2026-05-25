@@ -7,13 +7,15 @@ import {
   nativeImage,
   type OpenDialogOptions
 } from "electron";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CodexAdapter,
   type CodexAdapterEvent,
   type InitializeResponse,
+  type ReasoningEffort,
   type UserInput
 } from "@codep/codex-adapter";
 
@@ -36,6 +38,29 @@ interface ComposerAttachment {
 interface ClipboardAttachmentResult {
   attachments: ComposerAttachment[];
   formats: string[];
+}
+
+interface RemoteAttachmentInput {
+  kind: "image";
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
+interface ComposerSuggestion {
+  id: string;
+  type: "file" | "skill";
+  label: string;
+  name: string;
+  detail?: string;
+  insertText: string;
+  path?: string;
+}
+
+interface NotificationSoundFile {
+  path: string;
+  url: string;
+  name: string;
 }
 
 function createWindow(): void {
@@ -105,6 +130,23 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("attachment:clipboard", async () => clipboardAttachments());
+  ipcMain.handle("attachment:choose", async () => chooseAttachmentFiles());
+  ipcMain.handle("notification:sound:choose", async () => chooseNotificationSoundFile());
+  ipcMain.handle(
+    "attachment:remote",
+    async (_event, attachments: RemoteAttachmentInput[]) =>
+      saveRemoteAttachments(attachments)
+  );
+  ipcMain.handle(
+    "composer:files:search",
+    async (_event, options: { cwd: string; query?: string; limit?: number }) =>
+      searchWorkspaceFiles(options)
+  );
+  ipcMain.handle(
+    "composer:skills:search",
+    async (_event, options: { query?: string; limit?: number } = {}) =>
+      searchCodexSkills(options)
+  );
 
   ipcMain.handle("codex:connect", async () => {
     if (initializeResponse) {
@@ -159,12 +201,34 @@ function registerIpcHandlers(): void {
     initializeResponse = null;
   });
 
-  ipcMain.handle("codex:thread:start", async (_event, options: { cwd: string }) => {
-    if (!adapter) {
-      throw new Error("Codex adapter is not connected");
+  ipcMain.handle(
+    "codex:thread:start",
+    async (
+      _event,
+      options: {
+        cwd: string;
+        model?: string;
+        serviceTier?: string | null;
+        effort?: ReasoningEffort | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
+      }
+    ) => {
+      if (!adapter) {
+        throw new Error("Codex adapter is not connected");
+      }
+      return adapter.startThread({
+        cwd: options.cwd,
+        model: options.model,
+        serviceTier: options.serviceTier,
+        effort: options.effort,
+        approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile
+      });
     }
-    return adapter.startThread({ cwd: options.cwd });
-  });
+  );
 
   ipcMain.handle("codex:thread:list", async (_event, options: { cwd: string }) => {
     if (!adapter) {
@@ -180,13 +244,61 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    "codex:model:list",
+    async (_event, options: { includeHidden?: boolean; limit?: number } = {}) => {
+      if (!adapter) {
+        throw new Error("Codex adapter is not connected");
+      }
+      return adapter.listModels({
+        includeHidden: options.includeHidden,
+        limit: options.limit
+      });
+    }
+  );
+
+  ipcMain.handle("codex:status", async () => {
+    if (!adapter) {
+      throw new Error("Codex adapter is not connected");
+    }
+    return adapter.getStatus();
+  });
+
+  ipcMain.handle(
+    "codex:thread:rename",
+    async (_event, options: { threadId: string; name: string }) => {
+      if (!adapter) {
+        throw new Error("Codex adapter is not connected");
+      }
+      return adapter.setThreadName(options.threadId, options.name);
+    }
+  );
+
+  ipcMain.handle(
     "codex:thread:resume",
-    async (_event, options: { threadId: string; cwd: string }) => {
+    async (
+      _event,
+      options: {
+        threadId: string;
+        cwd: string;
+        model?: string;
+        serviceTier?: string | null;
+        effort?: ReasoningEffort | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
+      }
+    ) => {
       if (!adapter) {
         throw new Error("Codex adapter is not connected");
       }
       return adapter.resumeThread(options.threadId, {
         cwd: options.cwd,
+        model: options.model,
+        serviceTier: options.serviceTier,
+        effort: options.effort,
+        approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile,
         excludeTurns: false
       });
     }
@@ -196,15 +308,39 @@ function registerIpcHandlers(): void {
     "codex:turn:start",
     async (
       _event,
-      options: { threadId: string; text: string; input?: UserInput[] }
+      options: {
+        threadId: string;
+        text: string;
+        input?: UserInput[];
+        model?: string;
+        serviceTier?: string | null;
+        effort?: ReasoningEffort | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
+      }
     ) => {
       if (!adapter) {
         throw new Error("Codex adapter is not connected");
       }
       if (options.input) {
-        return adapter.startTurnWithInput(options.threadId, options.input);
+        return adapter.startTurnWithInput(options.threadId, options.input, {
+          model: options.model,
+          serviceTier: options.serviceTier,
+          effort: options.effort,
+          approvalPolicy: options.approvalPolicy,
+          approvalsReviewer: options.approvalsReviewer,
+          permissionProfile: options.permissionProfile
+        });
       }
-      return adapter.startTurn(options.threadId, options.text);
+      return adapter.startTurn(options.threadId, options.text, {
+        model: options.model,
+        serviceTier: options.serviceTier,
+        effort: options.effort,
+        approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile
+      });
     }
   );
 
@@ -265,6 +401,212 @@ async function clipboardAttachments(): Promise<ClipboardAttachmentResult> {
   const filePath = path.join(attachmentsDir, `clipboard-${Date.now()}.png`);
   await writeFile(filePath, image.toPNG());
   return { attachments: [imageAttachment(filePath, image)], formats };
+}
+
+async function chooseAttachmentFiles(): Promise<ComposerAttachment[]> {
+  const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
+  const options: OpenDialogOptions = {
+    title: "Attach files",
+    properties: ["openFile", "multiSelections"]
+  };
+  const result = window
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.map(filePath =>
+    isImagePath(filePath) ? imageAttachment(filePath) : fileAttachment(filePath)
+  );
+}
+
+async function chooseNotificationSoundFile(): Promise<NotificationSoundFile | null> {
+  const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
+  const options: OpenDialogOptions = {
+    title: "Choose notification sound",
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Audio",
+        extensions: ["mp3", "wav", "m4a", "aac", "ogg", "flac", "webm"]
+      },
+      { name: "All files", extensions: ["*"] }
+    ]
+  };
+  const result = window
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+
+  if (result.canceled) {
+    return null;
+  }
+
+  const filePath = result.filePaths[0];
+  return filePath
+    ? {
+        path: filePath,
+        url: pathToFileURL(filePath).toString(),
+        name: path.basename(filePath)
+      }
+    : null;
+}
+
+async function searchWorkspaceFiles(options: {
+  cwd: string;
+  query?: string;
+  limit?: number;
+}): Promise<ComposerSuggestion[]> {
+  const cwd = path.resolve(options.cwd);
+  const query = normalizeSearchQuery(options.query);
+  const limit = clampLimit(options.limit);
+  const results: Array<ComposerSuggestion & { score: number }> = [];
+  const queue: string[] = [cwd];
+  let visited = 0;
+
+  while (queue.length > 0 && visited < 7000 && results.length < limit * 4) {
+    const directory = queue.shift();
+    if (!directory) {
+      continue;
+    }
+    visited += 1;
+
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      const relativePath = toPosixPath(path.relative(cwd, fullPath));
+
+      if (entry.isDirectory()) {
+        if (!shouldSkipSearchDirectory(entry.name)) {
+          queue.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || !matchesSearch(relativePath, query)) {
+        continue;
+      }
+
+      const score = searchScore(relativePath, query);
+      results.push({
+        id: fullPath,
+        type: "file",
+        label: relativePath,
+        name: entry.name,
+        detail: path.dirname(relativePath) === "." ? undefined : path.dirname(relativePath),
+        insertText: `@${relativePath}`,
+        path: fullPath,
+        score
+      });
+    }
+  }
+
+  return results
+    .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
+    .slice(0, limit)
+    .map(({ score: _score, ...item }) => item);
+}
+
+async function searchCodexSkills(options: {
+  query?: string;
+  limit?: number;
+}): Promise<ComposerSuggestion[]> {
+  const query = normalizeSearchQuery(options.query);
+  const limit = clampLimit(options.limit);
+  const roots = [
+    path.join(homedir(), ".codex", "skills"),
+    path.join(homedir(), ".agents", "skills")
+  ];
+  const skillFiles = new Set<string>();
+  for (const root of roots) {
+    for (const skillFile of await findSkillFiles(root)) {
+      skillFiles.add(skillFile);
+    }
+  }
+
+  const results: Array<ComposerSuggestion & { score: number }> = [];
+  const seenNames = new Set<string>();
+  for (const skillFile of skillFiles) {
+    const skill = await readSkillSummary(skillFile);
+    if (!skill || seenNames.has(skill.name)) {
+      continue;
+    }
+    seenNames.add(skill.name);
+
+    const searchable = `${skill.name} ${skill.description}`;
+    if (!matchesSearch(searchable, query)) {
+      continue;
+    }
+
+    results.push({
+      id: skillFile,
+      type: "skill",
+      label: skill.name,
+      name: skill.name,
+      detail: skill.description || "Skill",
+      insertText: `$${skill.name}`,
+      path: skillFile,
+      score: searchScore(searchable, query)
+    });
+  }
+
+  return results
+    .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
+    .slice(0, limit)
+    .map(({ score: _score, ...item }) => item);
+}
+
+async function saveRemoteAttachments(
+  attachments: RemoteAttachmentInput[]
+): Promise<ComposerAttachment[]> {
+  if (!Array.isArray(attachments)) {
+    throw new Error("Remote attachments must be an array");
+  }
+
+  const attachmentsDir = await attachmentTempDir();
+  const savedAttachments: ComposerAttachment[] = [];
+
+  for (const [index, attachment] of attachments.entries()) {
+    if (!attachment || attachment.kind !== "image") {
+      continue;
+    }
+    if (!attachment.mimeType.startsWith("image/")) {
+      throw new Error(`Unsupported remote attachment type: ${attachment.mimeType}`);
+    }
+
+    const parsed = parseBase64DataUrl(attachment.dataUrl);
+    if (!parsed || !parsed.mimeType.startsWith("image/")) {
+      throw new Error(`Invalid remote image payload: ${attachment.name || index}`);
+    }
+
+    const safeName = safeAttachmentName(
+      attachment.name,
+      `remote-image-${Date.now()}-${index}${extensionForMimeType(parsed.mimeType)}`
+    );
+    const fileName = ensureImageExtension(
+      `remote-${Date.now()}-${index}-${safeName}`,
+      parsed.mimeType
+    );
+    const filePath = path.join(attachmentsDir, fileName);
+    await writeFile(filePath, parsed.buffer);
+    savedAttachments.push(
+      imageAttachment(
+        filePath,
+        nativeImage.createFromBuffer(parsed.buffer),
+        attachment.dataUrl
+      )
+    );
+  }
+
+  return savedAttachments;
 }
 
 async function clipboardFilePaths(): Promise<string[]> {
@@ -345,14 +687,19 @@ async function isExistingPath(filePath: string): Promise<boolean> {
   }
 }
 
-function imageAttachment(filePath: string, image = nativeImage.createFromPath(filePath)): ComposerAttachment {
+function imageAttachment(
+  filePath: string,
+  image = nativeImage.createFromPath(filePath),
+  previewDataUrl?: string
+): ComposerAttachment {
   const thumbnail = image.isEmpty() ? null : image.resize({ width: 160 });
   return {
     id: `${filePath}-${Date.now()}`,
     type: "localImage",
     path: filePath,
     name: path.basename(filePath),
-    previewDataUrl: thumbnail && !thumbnail.isEmpty() ? thumbnail.toDataURL() : undefined
+    previewDataUrl:
+      previewDataUrl ?? (thumbnail && !thumbnail.isEmpty() ? thumbnail.toDataURL() : undefined)
   };
 }
 
@@ -369,4 +716,156 @@ function isImagePath(filePath: string): boolean {
   return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"].includes(
     path.extname(filePath).toLowerCase()
   );
+}
+
+function shouldSkipSearchDirectory(name: string): boolean {
+  return new Set([
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".turbo",
+    "coverage"
+  ]).has(name);
+}
+
+async function findSkillFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const queue = [root];
+  let visited = 0;
+
+  while (queue.length > 0 && visited < 3000) {
+    const directory = queue.shift();
+    if (!directory) {
+      continue;
+    }
+    visited += 1;
+
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!shouldSkipSearchDirectory(entry.name)) {
+          queue.push(fullPath);
+        }
+      } else if (entry.isFile() && entry.name === "SKILL.md") {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  return files;
+}
+
+async function readSkillSummary(
+  skillFile: string
+): Promise<{ name: string; description: string } | null> {
+  try {
+    const content = await readFile(skillFile, "utf8");
+    const frontMatter = /^---\n([\s\S]*?)\n---/.exec(content)?.[1] ?? "";
+    const name =
+      frontMatter.match(/^name:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim() ||
+      path.basename(path.dirname(skillFile));
+    const description =
+      frontMatter.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim() ||
+      "";
+    return { name, description };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSearchQuery(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function clampLimit(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 30;
+  }
+  return Math.min(Math.max(Math.trunc(value), 1), 80);
+}
+
+function matchesSearch(value: string, query: string): boolean {
+  return query.length === 0 || value.toLowerCase().includes(query);
+}
+
+function searchScore(value: string, query: string): number {
+  if (query.length === 0) {
+    return value.includes("/") ? 2 : 0;
+  }
+
+  const normalized = value.toLowerCase();
+  const baseName = path.basename(normalized);
+  if (baseName === query) {
+    return 0;
+  }
+  if (baseName.startsWith(query)) {
+    return 1;
+  }
+  if (normalized.startsWith(query)) {
+    return 2;
+  }
+  const index = normalized.indexOf(query);
+  return index >= 0 ? 3 + index / 1000 : 1000;
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join("/");
+}
+
+function parseBase64DataUrl(
+  value: string
+): { mimeType: string; buffer: Buffer } | null {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(value);
+  if (!match) {
+    return null;
+  }
+  return {
+    mimeType: match[1],
+    buffer: Buffer.from(match[2], "base64")
+  };
+}
+
+function safeAttachmentName(name: string, fallback: string): string {
+  const trimmed = name.trim();
+  const safe = (trimmed || fallback)
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+  return safe || fallback;
+}
+
+function ensureImageExtension(fileName: string, mimeType: string): string {
+  return path.extname(fileName) ? fileName : `${fileName}${extensionForMimeType(mimeType)}`;
+}
+
+function extensionForMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "image/jpeg":
+    case "image/jpg":
+      return ".jpg";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "image/bmp":
+      return ".bmp";
+    case "image/tiff":
+      return ".tiff";
+    default:
+      return ".png";
+  }
 }

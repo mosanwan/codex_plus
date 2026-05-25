@@ -78,6 +78,8 @@ export interface ThreadStartResponse {
   thread: Thread;
   model: string;
   modelProvider: string;
+  serviceTier?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
   cwd: string;
 }
 
@@ -89,9 +91,35 @@ export interface ThreadListResponse {
   backwardsCursor: string | null;
 }
 
+export interface ModelSummary {
+  id?: string;
+  model?: string;
+  slug?: string;
+  displayName?: string;
+  display_name?: string;
+  hidden?: boolean;
+  visibility?: string;
+  defaultReasoningEffort?: ReasoningEffort;
+  default_reasoning_level?: ReasoningEffort;
+  isDefault?: boolean;
+  supportedReasoningEfforts: Array<{
+    reasoningEffort: ReasoningEffort;
+    description: string;
+  }>;
+}
+
+export interface ModelListResponse {
+  data: ModelSummary[];
+  nextCursor: string | null;
+}
+
+export type CodexStatusResponse = unknown;
+
 export interface TurnStartResponse {
   turn: Turn;
 }
+
+export interface ThreadNameSetResponse {}
 
 export interface UserTextInput {
   type: "text";
@@ -118,7 +146,11 @@ export interface ThreadStartOptions {
   cwd?: string;
   model?: string;
   modelProvider?: string;
+  serviceTier?: string | null;
+  effort?: ReasoningEffort | null;
   approvalPolicy?: string;
+  approvalsReviewer?: string;
+  permissionProfile?: string;
   sandbox?: string;
   runtimeWorkspaceRoots?: string[];
   config?: JsonObject;
@@ -129,7 +161,11 @@ export interface ThreadResumeOptions {
   cwd?: string;
   model?: string;
   modelProvider?: string;
+  serviceTier?: string | null;
+  effort?: ReasoningEffort | null;
   approvalPolicy?: string;
+  approvalsReviewer?: string;
+  permissionProfile?: string;
   sandbox?: string;
   runtimeWorkspaceRoots?: string[];
   config?: JsonObject;
@@ -151,9 +187,15 @@ export interface ThreadListOptions {
 export interface TurnStartOptions {
   cwd?: string;
   model?: string;
+  serviceTier?: string | null;
+  effort?: ReasoningEffort | null;
   approvalPolicy?: string;
+  approvalsReviewer?: string;
+  permissionProfile?: string;
   sandboxPolicy?: JsonObject;
 }
+
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface CodexNotification {
   method: string;

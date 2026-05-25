@@ -7,6 +7,9 @@ coverage/
 .env
 .env.*
 !.env.example
+.codep-relay.json
+.codep-relay.json.tmp
 .agents/
+.agent-browser/
 .codex/
 .idea/

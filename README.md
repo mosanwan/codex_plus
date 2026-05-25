@@ -7,6 +7,7 @@ The current implementation contains:
 - `packages/codex-adapter`: local adapter for `codex app-server`.
 - `apps/desktop`: React + Vite + Electron desktop shell.
 - `apps/mobile`: React + Vite + Capacitor Android shell.
+- `services/relay`: Go WebSocket relay for desktop/mobile remote control.
 - `codex-desktop-mobile-plan.md`: product and architecture plan.
 
 ## Commands
@@ -49,10 +50,29 @@ In Linux containers where Electron's SUID sandbox is not configured, use:
 npm run start:no-sandbox -w @codep/desktop
 ```
 
-Start the mobile web shell:
+Start the mobile web shell in a browser:
 
 ```bash
-npm run dev -w @codep/mobile
+npm run dev:mobile
+```
+
+The mobile dev server listens on `0.0.0.0` so it can be opened from another
+device on the same LAN. The alias below is kept for clarity:
+
+```bash
+npm run dev:mobile:lan
+```
+
+Start the relay server for desktop/mobile remote-control testing:
+
+```bash
+npm run dev:relay
+```
+
+Relay health check:
+
+```bash
+curl http://127.0.0.1:8787/healthz
 ```
 
 Build and sync the Android app:
@@ -123,3 +143,19 @@ P2 has an Android app shell:
 - Remote-control oriented screens for device status, sessions, chat, approvals, and diff.
 - Mobile composer behavior aligned with desktop: Enter sends, Stop is explicit.
 - Debug APK builds with the local Android SDK and Android Studio JBR.
+
+Mobile development is browser-first:
+
+- Implement and test core mobile behavior in `apps/mobile` through Vite.
+- Use Chrome DevTools device emulation for normal UI iteration.
+- Sync/build Android only when validating Capacitor packaging or native APIs.
+- Configure the same Relay endpoint and API key in desktop Settings and mobile
+  Settings to test the remote-control path.
+
+Current Relay protocol:
+
+- Desktop connects to `/ws/desktop?device_id=<id>&api_key=<key>`.
+- Mobile connects to `/ws/client?device_id=<id>&api_key=<key>`.
+- Desktop publishes `desktop.snapshot` and `desktop.event`.
+- Mobile sends `client.send_message`, `client.interrupt`, and
+  `client.resolve_approval`.

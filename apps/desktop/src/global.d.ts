@@ -1,5 +1,6 @@
 import type {
   CodexAdapterEvent,
+  ModelListResponse,
   ThreadListResponse,
   ThreadStartResponse,
   TurnStartResponse,
@@ -19,6 +20,29 @@ export interface ClipboardAttachmentResult {
   formats: string[];
 }
 
+export interface RemoteAttachmentInput {
+  kind: "image";
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
+export interface ComposerSuggestion {
+  id: string;
+  type: "file" | "skill";
+  label: string;
+  name: string;
+  detail?: string;
+  insertText: string;
+  path?: string;
+}
+
+export interface NotificationSoundFile {
+  path: string;
+  url: string;
+  name: string;
+}
+
 declare global {
   interface Window {
     codexApp: {
@@ -31,16 +55,59 @@ declare global {
       }>;
       disconnect(): Promise<void>;
       readClipboardAttachments(): Promise<ClipboardAttachmentResult>;
-      startThread(options: { cwd: string }): Promise<ThreadStartResponse>;
+      chooseAttachmentFiles(): Promise<ComposerAttachment[]>;
+      chooseNotificationSoundFile(): Promise<NotificationSoundFile | null>;
+      searchWorkspaceFiles(options: {
+        cwd: string;
+        query?: string;
+        limit?: number;
+      }): Promise<ComposerSuggestion[]>;
+      searchSkills(options?: {
+        query?: string;
+        limit?: number;
+      }): Promise<ComposerSuggestion[]>;
+      saveRemoteAttachments(
+        attachments: RemoteAttachmentInput[]
+      ): Promise<ComposerAttachment[]>;
+      startThread(options: {
+        cwd: string;
+        model?: string;
+        serviceTier?: string | null;
+        effort?: string | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
+      }): Promise<ThreadStartResponse>;
       listThreads(options: { cwd: string }): Promise<ThreadListResponse>;
+      listModels(options?: {
+        includeHidden?: boolean;
+        limit?: number;
+      }): Promise<ModelListResponse>;
+      getStatus(): Promise<unknown>;
+      renameThread(options: {
+        threadId: string;
+        name: string;
+      }): Promise<unknown>;
       resumeThread(options: {
         threadId: string;
         cwd: string;
+        model?: string;
+        serviceTier?: string | null;
+        effort?: string | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
       }): Promise<ThreadStartResponse>;
       startTurn(options: {
         threadId: string;
         text: string;
         input?: UserInput[];
+        model?: string;
+        serviceTier?: string | null;
+        effort?: string | null;
+        approvalPolicy?: string;
+        approvalsReviewer?: string;
+        permissionProfile?: string;
       }): Promise<TurnStartResponse>;
       interruptTurn(options: {
         threadId: string;

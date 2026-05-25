@@ -19,6 +19,9 @@ import type {
   ThreadResumeResponse,
   ThreadListOptions,
   ThreadListResponse,
+  ModelListResponse,
+  CodexStatusResponse,
+  ThreadNameSetResponse,
   TurnStartOptions,
   TurnStartResponse,
   UserInput
@@ -104,10 +107,13 @@ export class CodexAdapter {
         cwd: options.cwd,
         model: options.model,
         modelProvider: options.modelProvider,
+        serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
-        config: options.config,
+        config: mergeConfig(options.config, options.effort),
         ephemeral: options.ephemeral
       }),
       experimentalRawEvents: true,
@@ -125,10 +131,13 @@ export class CodexAdapter {
         cwd: options.cwd,
         model: options.model,
         modelProvider: options.modelProvider,
+        serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
-        config: options.config,
+        config: mergeConfig(options.config, options.effort),
         excludeTurns: options.excludeTurns ?? true
       }),
       experimentalRawEvents: true,
@@ -159,7 +168,11 @@ export class CodexAdapter {
       ...definedOnly({
         cwd: options.cwd,
         model: options.model,
+        serviceTier: options.serviceTier,
+        effort: options.effort,
         approvalPolicy: options.approvalPolicy,
+        approvalsReviewer: options.approvalsReviewer,
+        permissionProfile: options.permissionProfile,
         sandboxPolicy: options.sandboxPolicy
       })
     });
@@ -171,6 +184,10 @@ export class CodexAdapter {
 
   readThread(threadId: string, includeTurns = true): Promise<unknown> {
     return this.request("thread/read", { threadId, includeTurns });
+  }
+
+  setThreadName(threadId: string, name: string): Promise<ThreadNameSetResponse> {
+    return this.request("thread/name/set", { threadId, name });
   }
 
   listThreads(options: ThreadListOptions = {}): Promise<ThreadListResponse> {
@@ -188,6 +205,20 @@ export class CodexAdapter {
         useStateDbOnly: options.useStateDbOnly
       })
     );
+  }
+
+  listModels(options: { includeHidden?: boolean; limit?: number } = {}): Promise<ModelListResponse> {
+    return this.request(
+      "model/list",
+      definedOnly({
+        includeHidden: options.includeHidden,
+        limit: options.limit
+      })
+    );
+  }
+
+  getStatus(): Promise<CodexStatusResponse> {
+    return this.request("status");
   }
 
   resolveServerRequest<T>(id: RequestId, result: T): void {
@@ -229,4 +260,18 @@ function definedOnly<T extends Record<string, unknown>>(object: T): Partial<T> {
   return Object.fromEntries(
     Object.entries(object).filter(([, value]) => value !== undefined)
   ) as Partial<T>;
+}
+
+function mergeConfig(
+  config: ThreadStartOptions["config"],
+  effort: ThreadStartOptions["effort"]
+): ThreadStartOptions["config"] {
+  if (effort === undefined) {
+    return config;
+  }
+
+  return {
+    ...(config ?? {}),
+    model_reasoning_effort: effort
+  };
 }
