@@ -6,7 +6,7 @@ async function main(): Promise<void> {
   const adapter = new CodexAdapter({
     clientInfo: {
       name: "codep-adapter-probe",
-      title: "CodeP Adapter Probe",
+      title: "Codex+ Adapter Probe",
       version: "0.1.0"
     }
   });

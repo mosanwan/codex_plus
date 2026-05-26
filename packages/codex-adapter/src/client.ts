@@ -249,7 +249,7 @@ export class CodexAdapter {
     return (
       this.options.clientInfo ?? {
         name: "codep-desktop",
-        title: "CodeP Desktop",
+        title: "Codex+ Desktop",
         version: "0.1.0"
       }
     );

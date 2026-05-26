@@ -2498,6 +2498,35 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
+.settingsSummaryValue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.copyValueButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-sm);
+  color: var(--color-body);
+  background: var(--color-canvas);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.copyValueButton:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-ink);
+  background: var(--color-surface-soft);
+}
+
 .approveButton,
 .declineButton {
   display: inline-flex;

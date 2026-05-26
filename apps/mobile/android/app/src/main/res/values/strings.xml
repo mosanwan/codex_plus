@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">CodeP</string>
-    <string name="title_activity_main">CodeP</string>
+    <string name="app_name">Codex+</string>
+    <string name="title_activity_main">Codex+</string>
     <string name="package_name">app.codep.mobile</string>
     <string name="custom_url_scheme">app.codep.mobile</string>
 </resources>

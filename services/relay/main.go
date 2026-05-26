@@ -59,13 +59,14 @@ type hub struct {
 }
 
 type room struct {
-	key      string
-	userID   string
-	userName string
-	deviceID string
-	desktop  map[*peer]struct{}
-	client   map[*peer]struct{}
-	lastSeen time.Time
+	key                 string
+	userID              string
+	userName            string
+	deviceID            string
+	desktop             map[*peer]struct{}
+	client              map[*peer]struct{}
+	lastSeen            time.Time
+	lastDesktopSnapshot []byte
 }
 
 type peer struct {
@@ -147,7 +148,7 @@ func main() {
 }
 
 func parseConfig() config {
-	addr := flag.String("addr", envDefault("CODEP_RELAY_ADDR", "0.0.0.0:8787"), "HTTP listen address")
+	addr := flag.String("addr", envDefault("CODEP_RELAY_ADDR", "0.0.0.0:8909"), "HTTP listen address")
 	dataPath := flag.String("data", envDefault("CODEP_RELAY_DATA", ".codep-relay.json"), "relay data JSON path")
 	adminToken := flag.String("admin-token", os.Getenv("CODEP_RELAY_ADMIN_TOKEN"), "optional admin UI/API token")
 	flag.Parse()
@@ -489,6 +490,9 @@ func (h *hub) register(p *peer) {
 		From:     "relay",
 		SentAt:   time.Now().UTC(),
 	})
+	if p.role == "client" && len(r.lastDesktopSnapshot) > 0 {
+		p.send <- cloneBytes(r.lastDesktopSnapshot)
+	}
 }
 
 func (h *hub) unregister(p *peer) {
@@ -515,11 +519,14 @@ func (h *hub) unregister(p *peer) {
 func (h *hub) forward(from *peer, payload []byte) {
 	msg := normalizeEnvelope(from, payload)
 
-	h.mu.RLock()
+	h.mu.Lock()
 	r := h.rooms[roomKey(from.userID, from.deviceID)]
 	if r == nil {
-		h.mu.RUnlock()
+		h.mu.Unlock()
 		return
+	}
+	if from.role == "desktop" && envelopeType(msg) == "desktop.snapshot" {
+		r.lastDesktopSnapshot = cloneBytes(msg)
 	}
 
 	targets := r.client
@@ -531,7 +538,7 @@ func (h *hub) forward(from *peer, payload []byte) {
 	for p := range targets {
 		peers = append(peers, p)
 	}
-	h.mu.RUnlock()
+	h.mu.Unlock()
 
 	for _, p := range peers {
 		select {
@@ -540,6 +547,25 @@ func (h *hub) forward(from *peer, payload []byte) {
 			p.logger.Warn("dropping relay message for slow peer")
 		}
 	}
+}
+
+func envelopeType(payload []byte) string {
+	var raw struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return ""
+	}
+	return raw.Type
+}
+
+func cloneBytes(value []byte) []byte {
+	if len(value) == 0 {
+		return nil
+	}
+	next := make([]byte, len(value))
+	copy(next, value)
+	return next
 }
 
 func (h *hub) devices() []deviceSummary {
@@ -714,7 +740,7 @@ var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CodeP Relay</title>
+  <title>Codex+ Relay</title>
   <style>
     :root {
       --canvas: #ffffff;
@@ -829,7 +855,7 @@ var adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
 <body>
   <header>
     <div>
-      <h1>CodeP Relay</h1>
+      <h1>Codex+ Relay</h1>
       <p class="muted">Manage API keys for desktop and mobile clients.</p>
     </div>
     <span class="pill">{{if .AdminProtected}}Admin protected{{else}}Development mode{{end}}</span>

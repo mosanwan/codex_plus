@@ -1,4 +1,4 @@
-# CodeP Desktop and Mobile
+# Codex+ Desktop and Mobile
 
 Prototype for a Codex-like desktop app with a future mobile remote-control client.
 
@@ -72,7 +72,7 @@ npm run dev:relay
 Relay health check:
 
 ```bash
-curl http://127.0.0.1:8787/healthz
+curl http://127.0.0.1:8909/healthz
 ```
 
 Build and sync the Android app:

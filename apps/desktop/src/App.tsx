@@ -3,6 +3,7 @@ import {
   AtSign,
   ChevronRight,
   Check,
+  Copy,
   FolderOpen,
   Languages,
   MoreHorizontal,
@@ -158,6 +159,7 @@ interface RemoteCommandEnvelope {
     permissionMode?: PermissionMode;
     model?: string;
     effort?: ModelEffort;
+    iconId?: string;
     requestId?: string | number;
     decision?: "accept" | "decline" | "cancel";
   };
@@ -178,6 +180,10 @@ interface RemoteSnapshotWorkspace {
     title: string;
     updatedAt: string;
     status: string;
+    iconId?: string;
+    unread?: boolean;
+    turnStartedAt?: number | null;
+    lastTurnDurationMs?: number | null;
   }>;
 }
 
@@ -303,6 +309,10 @@ const UI_TEXT = {
     notReady: "Not ready",
     saved: "Saved",
     missing: "Missing",
+    copy: "Copy",
+    copied: "Copied",
+    copyApiKey: "Copy API key",
+    copyDeviceId: "Copy Device ID",
     connection: "Connection",
     defaultPermissionLabel: "Default",
     defaultPermissionDescription: "Codex can read and edit files in the current workspace, and run commands. Approval is required for internet access or edits outside the workspace.",
@@ -444,6 +454,10 @@ const UI_TEXT = {
     notReady: "未就绪",
     saved: "已保存",
     missing: "缺失",
+    copy: "复制",
+    copied: "已复制",
+    copyApiKey: "复制 API key",
+    copyDeviceId: "复制设备 ID",
     connection: "连接",
     defaultPermissionLabel: "Default",
     defaultPermissionDescription: "Codex 可以读取和编辑当前工作区内的文件，并运行命令。访问互联网或编辑工作区外文件时需要审批。",
@@ -696,7 +710,7 @@ export function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [relayEndpoint, setRelayEndpoint] = useState(
-    () => window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY) ?? "ws://127.0.0.1:8787"
+    () => window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY) ?? "ws://127.0.0.1:8909"
   );
   const [relayApiKey, setRelayApiKey] = useState(
     () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
@@ -1068,9 +1082,13 @@ export function App() {
     relayState,
     runningTurnsBySession,
     session,
+    sessionIconOverrides,
     sessions,
     status,
     transcript,
+    unreadSessionIds,
+    lastTurnDurationBySession,
+    modelOptions,
     workspace,
     workspaceSessions,
     workspaces
@@ -1374,7 +1392,7 @@ export function App() {
     const workspaceLabel = workspaceName(cwd);
     if (
       !window.confirm(
-        `Remove ${workspaceLabel} from CodeP? Codex session history on disk will not be deleted.`
+        `Remove ${workspaceLabel} from Codex+? Codex session history on disk will not be deleted.`
       )
     ) {
       return;
@@ -2011,6 +2029,15 @@ export function App() {
       return;
     }
 
+    if (envelope.type === "client.open_workspace") {
+      const cwd = envelope.payload?.workspace;
+      if (cwd && workspaces.includes(cwd)) {
+        selectWorkspace(cwd);
+        setStatus(`Selected workspace ${workspaceName(cwd)} from mobile.`);
+      }
+      return;
+    }
+
     if (envelope.type === "client.new_session") {
       const cwd = envelope.payload?.workspace;
       if (cwd) {
@@ -2030,6 +2057,16 @@ export function App() {
         (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
         ({ threadId: sessionId, title, updatedAt: undefined } satisfies SessionView);
       await renameSessionTo(cwd, target, title, { prompt: false });
+      return;
+    }
+
+    if (envelope.type === "client.set_session_icon") {
+      const sessionId = envelope.payload?.sessionId;
+      const iconId = envelope.payload?.iconId;
+      if (sessionId && isSessionIconId(iconId)) {
+        updateSessionIcon(sessionId, iconId);
+        setStatus("Session icon updated from mobile.");
+      }
       return;
     }
 
@@ -2069,7 +2106,11 @@ export function App() {
         id: item.threadId,
         title: item.title,
         updatedAt: sessionMeta(item),
-        status: runningTurnsBySession[item.threadId] ? "working" : "ready"
+        status: runningTurnsBySession[item.threadId] ? "working" : "ready",
+        iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
+        unread: unreadSessionIds.has(item.threadId),
+        turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
+        lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
       }))
     }));
 
@@ -2089,7 +2130,11 @@ export function App() {
           id: item.threadId,
           title: item.title,
           updatedAt: sessionMeta(item),
-          status: runningTurnsBySession[item.threadId] ? "working" : "ready"
+          status: runningTurnsBySession[item.threadId] ? "working" : "ready",
+          iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
+          unread: unreadSessionIds.has(item.threadId),
+          turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
+          lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
         })),
         activeSessionId: session?.threadId ?? null,
         messages: transcript.slice(-40).map(remoteMessageFromTranscript),
@@ -2102,6 +2147,7 @@ export function App() {
         status,
         permissionMode,
         model,
+        modelOptions,
         modelEffort,
         contextUsage,
         rateLimitUsage,
@@ -2460,7 +2506,7 @@ export function App() {
         <div className="brand">
           <div className="brandMark">C</div>
           <div className="brandText">
-            <h1>CodeP</h1>
+            <h1>Codex+</h1>
             <p>{t("localWorkspace")}</p>
           </div>
           <button
@@ -3584,8 +3630,25 @@ function SettingsModal({
   onSoundNotificationsEnabledChange: (value: boolean) => void;
   onThemeModeChange: (value: ThemeMode) => void;
 }) {
+  const [copiedField, setCopiedField] = useState<"apiKey" | "deviceId" | null>(null);
   const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
     textFor(language, key, values);
+
+  async function copySettingValue(field: "apiKey" | "deviceId", value: string) {
+    if (!value) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(value);
+      setCopiedField(field);
+      window.setTimeout(() => {
+        setCopiedField(current => (current === field ? null : current));
+      }, 1600);
+    } catch {
+      setCopiedField(null);
+    }
+  }
 
   return (
     <div
@@ -3774,7 +3837,7 @@ function SettingsModal({
                 autoCapitalize="none"
                 autoCorrect="off"
                 onChange={event => onRelayEndpointChange(event.target.value)}
-                placeholder="ws://server:8787"
+                placeholder="ws://server:8909"
                 spellCheck={false}
                 value={relayEndpoint}
               />
@@ -3809,7 +3872,18 @@ function SettingsModal({
               <span>{t("endpoint")}</span>
               <code>{relayEndpoint || t("notSet")}</code>
               <span>{t("deviceId")}</span>
-              <code>{relayDeviceId}</code>
+              <div className="settingsSummaryValue">
+                <code>{relayDeviceId}</code>
+                <button
+                  aria-label={t("copyDeviceId")}
+                  className="copyValueButton"
+                  type="button"
+                  onClick={() => void copySettingValue("deviceId", relayDeviceId)}
+                >
+                  {copiedField === "deviceId" ? <Check size={13} /> : <Copy size={13} />}
+                  <span>{copiedField === "deviceId" ? t("copied") : t("copy")}</span>
+                </button>
+              </div>
               <span>{t("desktopUrl")}</span>
               <code>
                 {relayEndpoint && relayApiKey
@@ -3817,7 +3891,19 @@ function SettingsModal({
                   : t("notReady")}
               </code>
               <span>{t("apiKey")}</span>
-              <strong>{relayApiKey ? t("saved") : t("missing")}</strong>
+              <div className="settingsSummaryValue">
+                <strong>{relayApiKey ? t("saved") : t("missing")}</strong>
+                <button
+                  aria-label={t("copyApiKey")}
+                  className="copyValueButton"
+                  disabled={!relayApiKey}
+                  type="button"
+                  onClick={() => void copySettingValue("apiKey", relayApiKey)}
+                >
+                  {copiedField === "apiKey" ? <Check size={13} /> : <Copy size={13} />}
+                  <span>{copiedField === "apiKey" ? t("copied") : t("copy")}</span>
+                </button>
+              </div>
               <span>{t("connection")}</span>
               <strong>{relayState}</strong>
             </div>
@@ -3826,6 +3912,27 @@ function SettingsModal({
       </section>
     </div>
   );
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-1000px";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+
+  if (!copied) {
+    throw new Error("Unable to copy text.");
+  }
 }
 
 function storedDeviceId(): string {

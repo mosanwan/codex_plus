@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "app.codep.mobile",
-  appName: "CodeP",
+  appName: "Codex+",
   webDir: "dist",
   android: {
     backgroundColor: "#ffffff"

@@ -22,6 +22,15 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+if (process.platform === "linux") {
+  app.setName("Codex+");
+  app.commandLine.appendSwitch(
+    "ozone-platform-hint",
+    process.env.CODEX_PLUS_OZONE_PLATFORM ?? "auto"
+  );
+  app.commandLine.appendSwitch("enable-features", "WaylandWindowDecorations");
+}
+
 let mainWindow: BrowserWindow | null = null;
 let adapter: CodexAdapter | null = null;
 let connectPromise: Promise<InitializeResponse> | null = null;
@@ -69,7 +78,7 @@ function createWindow(): void {
     height: 820,
     minWidth: 960,
     minHeight: 640,
-    title: "CodeP Desktop",
+    title: "Codex+ Desktop",
     autoHideMenuBar: true,
     backgroundColor: "#f6f7f8",
     webPreferences: {
@@ -161,7 +170,7 @@ function registerIpcHandlers(): void {
       adapter = new CodexAdapter({
         clientInfo: {
           name: "codep-desktop",
-          title: "CodeP Desktop",
+          title: "Codex+ Desktop",
           version: app.getVersion()
         }
       });

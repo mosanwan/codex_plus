@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { createServer } from "node:net";
 
 export interface CodexAppServerProcessOptions {
@@ -72,7 +75,11 @@ export class CodexAppServerProcess {
       ["app-server", "--listen", this.url],
       {
         detached: true,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          PATH: runtimePath()
+        }
       }
     );
 
@@ -99,6 +106,30 @@ export class CodexAppServerProcess {
       this.logs = this.logs.slice(-8_000);
     }
   }
+}
+
+function runtimePath(): string {
+  const entries = [
+    process.env.PATH,
+    path.join(homedir(), ".local", "bin"),
+    path.join(homedir(), ".npm-global", "bin"),
+    path.join(homedir(), ".yarn", "bin"),
+    ...nvmNodeBins()
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return Array.from(new Set(entries.flatMap(entry => entry.split(":").filter(Boolean)))).join(":");
+}
+
+function nvmNodeBins(): string[] {
+  const versionsDir = path.join(homedir(), ".nvm", "versions", "node");
+  if (!existsSync(versionsDir)) {
+    return [];
+  }
+
+  return readdirSync(versionsDir)
+    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
+    .map(version => path.join(versionsDir, version, "bin"))
+    .filter(entry => existsSync(entry));
 }
 
 function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void {

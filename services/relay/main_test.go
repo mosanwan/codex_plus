@@ -66,6 +66,63 @@ func TestRelayRequiresAPIKeyAndForwardsWithinUserRoom(t *testing.T) {
 	}
 }
 
+func TestRelayReplaysLatestDesktopSnapshotToNewClient(t *testing.T) {
+	t.Parallel()
+
+	store, err := newUserStore(t.TempDir() + "/relay.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.create("three", "cp_test_snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newServer(config{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	httpServer := httptest.NewServer(srv.routes())
+	t.Cleanup(httpServer.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	desktop := dialRelay(t, wsURL+"/ws/desktop?device_id=desktop-main&api_key=cp_test_snapshot")
+	t.Cleanup(func() { _ = desktop.Close() })
+	readEnvelope(t, desktop, "relay.connected")
+
+	if err := desktop.WriteJSON(map[string]any{
+		"type": "desktop.snapshot",
+		"payload": map[string]any{
+			"workspaces": []map[string]any{
+				{
+					"path": "/workspace/codep",
+					"name": "codep",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := dialRelay(t, wsURL+"/ws/client?device_id=desktop-main&api_key=cp_test_snapshot")
+	t.Cleanup(func() { _ = client.Close() })
+	readEnvelope(t, client, "relay.connected")
+	replayed := readEnvelope(t, client, "desktop.snapshot")
+
+	if replayed["from"] != "desktop" {
+		t.Fatalf("expected desktop sender, got %v", replayed["from"])
+	}
+	if replayed["user_id"] != user.ID {
+		t.Fatalf("expected user id %s, got %v", user.ID, replayed["user_id"])
+	}
+
+	payload, ok := replayed["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload object, got %T", replayed["payload"])
+	}
+	workspaces, ok := payload["workspaces"].([]any)
+	if !ok || len(workspaces) != 1 {
+		t.Fatalf("expected one workspace in replayed snapshot, got %#v", payload["workspaces"])
+	}
+}
+
 func dialRelay(t *testing.T, url string) *websocket.Conn {
 	t.Helper()
 
