@@ -220,6 +220,7 @@ const SESSION_STORAGE_KEY = "codep.sessionsByWorkspace";
 const SESSION_TITLE_OVERRIDES_STORAGE_KEY = "codep.sessionTitleOverrides";
 const SESSION_ICON_OVERRIDES_STORAGE_KEY = "codep.sessionIconOverrides";
 const FAVORITE_SESSIONS_STORAGE_KEY = "codep.favoriteSessions";
+const HIDDEN_SESSIONS_STORAGE_KEY = "codep.hiddenSessions";
 const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.collapsedWorkspaces";
 const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
 const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
@@ -407,6 +408,8 @@ const UI_TEXT = {
     favoriteSession: "Favorite {title}",
     unfavoriteSession: "Unfavorite {title}",
     renameSession: "Rename {title}",
+    removeSession: "Remove {title}",
+    removeSessionConfirm: "Remove {title} from Codex+? Codex session history on disk will not be deleted.",
     changeIcon: "Change icon for {title}",
     useIcon: "Use {icon} icon"
   },
@@ -563,6 +566,8 @@ const UI_TEXT = {
     favoriteSession: "收藏 {title}",
     unfavoriteSession: "取消收藏 {title}",
     renameSession: "重命名 {title}",
+    removeSession: "移除 {title}",
+    removeSessionConfirm: "从 Codex+ 移除 {title}？磁盘上的 Codex Session 历史不会被删除。",
     changeIcon: "修改 {title} 的图标",
     useIcon: "使用 {icon} 图标"
   }
@@ -740,6 +745,9 @@ export function App() {
   const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
     () => new Set(readStringList(FAVORITE_SESSIONS_STORAGE_KEY))
   );
+  const [hiddenSessionIds, setHiddenSessionIds] = useState<Set<string>>(
+    () => new Set(readStringList(HIDDEN_SESSIONS_STORAGE_KEY))
+  );
   const [sessionIconOverrides, setSessionIconOverrides] = useState<Record<string, string>>(
     () => readStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY)
   );
@@ -823,6 +831,7 @@ export function App() {
   const activeSessionRef = useRef<SessionView | null>(session);
   const activeWorkspaceRef = useRef<string | null>(workspace);
   const workspaceSessionsRef = useRef<Record<string, SessionView[]>>(workspaceSessions);
+  const hiddenSessionIdsRef = useRef<Set<string>>(hiddenSessionIds);
   const runningTurnsBySessionRef = useRef<Record<string, string>>(runningTurnsBySession);
   const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
   const turnAssistantTextRef = useRef<Record<string, { turnId: string; text: string }>>(
@@ -926,6 +935,10 @@ export function App() {
   useEffect(() => {
     workspaceSessionsRef.current = workspaceSessions;
   }, [workspaceSessions]);
+
+  useEffect(() => {
+    hiddenSessionIdsRef.current = hiddenSessionIds;
+  }, [hiddenSessionIds]);
 
   useEffect(() => {
     runningTurnsBySessionRef.current = runningTurnsBySession;
@@ -1752,6 +1765,69 @@ export function App() {
     });
   }
 
+  function removeSession(cwd: string, target: SessionView) {
+    const sessionLabel = target.title || target.threadId.slice(0, 8);
+    if (!window.confirm(t("removeSessionConfirm", { title: sessionLabel }))) {
+      return;
+    }
+
+    setHiddenSessionIds(previous => {
+      const next = new Set(previous);
+      next.add(target.threadId);
+      hiddenSessionIdsRef.current = next;
+      saveStringList(HIDDEN_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+    setWorkspaceSessions(previous => ({
+      ...previous,
+      [cwd]: (previous[cwd] ?? []).filter(item => item.threadId !== target.threadId)
+    }));
+    setFavoriteSessionIds(previous => {
+      if (!previous.has(target.threadId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.delete(target.threadId);
+      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+    setUnreadSessionIds(previous => {
+      if (!previous.has(target.threadId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.delete(target.threadId);
+      saveStringList(UNREAD_SESSIONS_STORAGE_KEY, Array.from(next));
+      return next;
+    });
+    setRunningTurnsBySession(previous =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([threadId]) => threadId !== target.threadId)
+      )
+    );
+    setTurnStartedAtBySession(previous =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([threadId]) => threadId !== target.threadId)
+      )
+    );
+    setLastTurnDurationBySession(previous =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([threadId]) => threadId !== target.threadId)
+      )
+    );
+    removeSavedSession(cwd, target.threadId);
+
+    if (workspace === cwd && session?.threadId === target.threadId) {
+      setSession(null);
+      setTranscript([]);
+      resetVisibleTranscriptWindow();
+      setAttachments([]);
+      setApprovals([]);
+    }
+
+    setStatus("Session removed from the list. Codex history on disk was not deleted.");
+  }
+
   function updateSessionIcon(threadId: string, iconId: SessionIconId) {
     setSessionIconOverrides(previous => {
       const next = {
@@ -1931,7 +2007,11 @@ export function App() {
     setIsSessionOpening(true);
     try {
       const savedSession = readSavedSession(workspace);
-      const latestSession = sessions[0] ?? savedSession;
+      const latestSession =
+        sessions[0] ??
+        (savedSession && !hiddenSessionIdsRef.current.has(savedSession.threadId)
+          ? savedSession
+          : null);
       const response = latestSession
         ? await desktopApi
             .resumeThread({
@@ -2117,20 +2197,23 @@ export function App() {
     try {
       const response = await desktopApi.listThreads({ cwd });
       const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
-      const listedSessions = response.data.map(thread => ({
-        threadId: thread.id,
-        title: titleOverrides[thread.id] ?? thread.preview ?? thread.name ?? workspaceName(cwd),
-        updatedAt: thread.updatedAt,
-        status:
-          typeof thread.status === "string"
-            ? thread.status
-            : JSON.stringify(thread.status)
-      }));
+      const listedSessions = response.data
+        .map(thread => ({
+          threadId: thread.id,
+          title: titleOverrides[thread.id] ?? thread.preview ?? thread.name ?? workspaceName(cwd),
+          updatedAt: thread.updatedAt,
+          status:
+            typeof thread.status === "string"
+              ? thread.status
+              : JSON.stringify(thread.status)
+        }))
+        .filter(item => !hiddenSessionIdsRef.current.has(item.threadId));
       const preservedSession =
         options.preserveSession ??
         (cwd === activeWorkspaceRef.current ? activeSessionRef.current : null);
       const nextSessions =
         preservedSession &&
+        !hiddenSessionIdsRef.current.has(preservedSession.threadId) &&
         !listedSessions.some(item => item.threadId === preservedSession.threadId)
           ? upsertSession(listedSessions, preservedSession)
           : listedSessions;
@@ -2386,6 +2469,11 @@ export function App() {
       const cwd = envelope.payload?.workspace;
       const sessionId = envelope.payload?.sessionId;
       if (!cwd || !sessionId) {
+        return;
+      }
+      if (hiddenSessionIdsRef.current.has(sessionId)) {
+        ackClientCommand(clientCommandId);
+        setStatus("Mobile open session ignored: session is removed from the list.");
         return;
       }
       const target =
@@ -2669,6 +2757,9 @@ export function App() {
     const sessionId = payload?.sessionId?.trim();
     const cwd = payload?.workspace?.trim();
     if (sessionId) {
+      if (hiddenSessionIdsRef.current.has(sessionId)) {
+        return null;
+      }
       const workspaceEntries = cwd
         ? [[cwd, workspaceSessionsRef.current[cwd] ?? []] as const]
         : Object.entries(workspaceSessionsRef.current);
@@ -3246,6 +3337,7 @@ export function App() {
                                   onFavorite={() => toggleFavoriteSession(item.threadId)}
                                   onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
                                   onOpen={() => void openSession(item, cwd)}
+                                  onRemove={() => removeSession(cwd, item)}
                                   onRename={title => void renameSession(cwd, item, title)}
                                 />
                               ))
@@ -3280,6 +3372,7 @@ export function App() {
                             onFavorite={() => toggleFavoriteSession(item.threadId)}
                             onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
                             onOpen={() => void openSession(item, cwd)}
+                            onRemove={() => removeSession(cwd, item)}
                             onRename={title => void renameSession(cwd, item, title)}
                           />
                         </div>
@@ -3307,6 +3400,7 @@ export function App() {
                           onFavorite={() => toggleFavoriteSession(item.threadId)}
                           onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
                           onOpen={() => void openSession(item, cwd)}
+                          onRemove={() => removeSession(cwd, item)}
                           onRename={title => void renameSession(cwd, item, title)}
                         />
                       </div>
@@ -3827,6 +3921,7 @@ function SessionTreeRow({
   onFavorite,
   onIconChange,
   onOpen,
+  onRemove,
   onRename
 }: {
   active: boolean;
@@ -3840,6 +3935,7 @@ function SessionTreeRow({
   onFavorite: () => void;
   onIconChange: (iconId: SessionIconId) => void;
   onOpen: () => void;
+  onRemove: () => void;
   onRename: (title: string) => void | Promise<void>;
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
@@ -3938,6 +4034,14 @@ function SessionTreeRow({
             onClick={() => setIsRenaming(true)}
           >
             <Pencil size={14} />
+          </button>
+          <button
+            aria-label={t("removeSession", { title: item.title })}
+            className="treeIconButton dangerIconButton"
+            type="button"
+            onClick={onRemove}
+          >
+            <Trash2 size={14} />
           </button>
         </>
       )}
@@ -6137,6 +6241,20 @@ function saveSession(workspace: string, session: SessionView): void {
     const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
     const sessions = raw ? (JSON.parse(raw) as Record<string, SessionView>) : {};
     sessions[workspace] = session;
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
+  } catch {
+    // localStorage persistence is a convenience, not a hard dependency.
+  }
+}
+
+function removeSavedSession(workspace: string, threadId: string): void {
+  try {
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    const sessions = raw ? (JSON.parse(raw) as Record<string, SessionView>) : {};
+    if (sessions[workspace]?.threadId !== threadId) {
+      return;
+    }
+    delete sessions[workspace];
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessions));
   } catch {
     // localStorage persistence is a convenience, not a hard dependency.

@@ -981,7 +981,7 @@ textarea:focus-visible {
 .sessionChild {
   display: grid;
   position: relative;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 2px;
   width: 100%;
@@ -1162,6 +1162,16 @@ textarea:focus-visible {
 .sessionChild[data-active="true"] .treeIconButton {
   color: var(--color-selected-fg);
   background: transparent;
+}
+
+.treeIconButton.dangerIconButton {
+  color: var(--color-muted);
+}
+
+.treeIconButton.dangerIconButton:hover,
+.treeIconButton.dangerIconButton:focus-visible {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .sessionChild[data-active="true"][data-renaming="true"] {
