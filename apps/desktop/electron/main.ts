@@ -7,10 +7,13 @@ import {
   nativeImage,
   type OpenDialogOptions
 } from "electron";
-import { readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { access, readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import {
   CodexAdapter,
   type CodexAdapterEvent,
@@ -23,6 +26,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const execFileAsync = promisify(execFile);
 
 if (process.platform === "linux") {
   app.setName("Codex+");
@@ -48,6 +52,11 @@ let mainWindow: BrowserWindow | null = null;
 let adapter: CodexAdapter | null = null;
 let connectPromise: Promise<InitializeResponse> | null = null;
 let initializeResponse: InitializeResponse | null = null;
+let userSettingsPromise: Promise<UserSettings> | null = null;
+
+interface UserSettings {
+  codexCommandPath?: string;
+}
 
 interface ComposerAttachment {
   id: string;
@@ -137,6 +146,263 @@ app.on("before-quit", () => {
   void adapter?.disconnect();
 });
 
+async function connectCodexAdapter(): Promise<InitializeResponse> {
+  const settings = await loadUserSettings();
+
+  try {
+    return await connectWithCodexCommand(settings.codexCommandPath);
+  } catch (error) {
+    await resetAdapter();
+
+    if (!isCodexCommandNotFoundError(error)) {
+      throw error;
+    }
+
+    const detectedPath = await detectCodexCommandPath();
+    if (detectedPath) {
+      await saveUserSettings({
+        ...settings,
+        codexCommandPath: detectedPath
+      });
+      return connectWithCodexCommand(detectedPath);
+    }
+
+    const selectedPath = await promptForCodexCommand();
+    if (!selectedPath) {
+      throw error;
+    }
+
+    await saveUserSettings({
+      ...settings,
+      codexCommandPath: selectedPath
+    });
+
+    return connectWithCodexCommand(selectedPath);
+  }
+}
+
+async function connectWithCodexCommand(
+  codexCommandPath?: string
+): Promise<InitializeResponse> {
+  if (!adapter) {
+    adapter = createCodexAdapter(codexCommandPath);
+  }
+
+  return adapter.connect();
+}
+
+function createCodexAdapter(codexCommandPath?: string): CodexAdapter {
+  const nextAdapter = new CodexAdapter({
+    codexCommand: codexCommandPath,
+    clientInfo: {
+      name: "codep-desktop",
+      title: "Codex+ Desktop",
+      version: app.getVersion()
+    }
+  });
+
+  nextAdapter.on("event", event => {
+    sendCodexEvent(event);
+  });
+  nextAdapter.on("error", error => {
+    sendCodexEvent({
+      type: "raw.notification",
+      method: "adapter/error",
+      raw: {
+        method: "adapter/error",
+        params: { message: error.message }
+      }
+    });
+  });
+
+  return nextAdapter;
+}
+
+async function resetAdapter(): Promise<void> {
+  await adapter?.disconnect();
+  adapter = null;
+  initializeResponse = null;
+}
+
+function isCodexCommandNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Failed to start codex app-server") &&
+    (message.includes("ENOENT") ||
+      message.includes("not found") ||
+      message.includes("no such file or directory"))
+  );
+}
+
+async function promptForCodexCommand(): Promise<string | null> {
+  const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
+  const options: OpenDialogOptions = {
+    title: "Locate Codex CLI",
+    message:
+      "Codex+ could not find the codex command. Choose the codex executable to continue.",
+    buttonLabel: "Use Codex CLI",
+    properties: ["openFile"],
+    defaultPath: await defaultCodexCommandDialogPath()
+  };
+  const result = window
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+  const selectedPath = result.canceled ? null : result.filePaths[0] ?? null;
+  if (!selectedPath) {
+    return null;
+  }
+
+  try {
+    await access(selectedPath, fsConstants.X_OK);
+    return selectedPath;
+  } catch {
+    const messageOptions = {
+      type: "error",
+      title: "Codex CLI is not executable",
+      message: "The selected file cannot be run as a command.",
+      detail: selectedPath
+    } as const;
+    if (window) {
+      await dialog.showMessageBox(window, messageOptions);
+    } else {
+      await dialog.showMessageBox(messageOptions);
+    }
+    return null;
+  }
+}
+
+async function defaultCodexCommandDialogPath(): Promise<string | undefined> {
+  for (const candidate of commonCodexCommandPaths()) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // Try the next common installation path.
+    }
+  }
+  return homedir();
+}
+
+async function detectCodexCommandPath(): Promise<string | null> {
+  for (const candidate of commonCodexCommandPaths()) {
+    if (await isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+
+  const shellPath = await detectCodexCommandPathFromShell();
+  if (shellPath && await isExecutableFile(shellPath)) {
+    return shellPath;
+  }
+
+  return null;
+}
+
+async function detectCodexCommandPathFromShell(): Promise<string | null> {
+  if (process.platform === "win32") {
+    return detectCodexCommandPathFromWindows();
+  }
+
+  const shells = Array.from(
+    new Set([process.env.SHELL, "/bin/zsh", "/bin/bash"].filter(Boolean))
+  ) as string[];
+
+  for (const shell of shells) {
+    try {
+      const { stdout } = await execFileAsync(shell, ["-lc", "command -v codex"], {
+        encoding: "utf8",
+        timeout: 2_000
+      });
+      const firstLine = stdout.split("\n").map(line => line.trim()).find(Boolean);
+      if (firstLine && path.isAbsolute(firstLine)) {
+        return firstLine;
+      }
+    } catch {
+      // Try the next available shell.
+    }
+  }
+
+  return null;
+}
+
+async function detectCodexCommandPathFromWindows(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("where.exe", ["codex"], {
+      encoding: "utf8",
+      timeout: 2_000
+    });
+    const firstLine = stdout
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(Boolean);
+    return firstLine ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function commonCodexCommandPaths(): string[] {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA;
+    const appData = process.env.APPDATA;
+    const userProfile = process.env.USERPROFILE || homedir();
+    return [
+      ...(appData ? [path.join(appData, "npm", "codex.cmd")] : []),
+      ...(appData ? [path.join(appData, "npm", "codex.exe")] : []),
+      ...(localAppData
+        ? [path.join(localAppData, "pnpm", "codex.cmd")]
+        : []),
+      path.join(userProfile, ".yarn", "bin", "codex.cmd"),
+      path.join(userProfile, ".local", "bin", "codex.exe")
+    ];
+  }
+
+  return [
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    path.join(homedir(), ".local", "bin", "codex"),
+    path.join(homedir(), ".npm-global", "bin", "codex")
+  ];
+}
+
+async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadUserSettings(): Promise<UserSettings> {
+  if (!userSettingsPromise) {
+    userSettingsPromise = readUserSettings();
+  }
+  return userSettingsPromise;
+}
+
+async function readUserSettings(): Promise<UserSettings> {
+  try {
+    const raw = await readFile(userSettingsPath(), "utf8");
+    const parsed = JSON.parse(raw) as Partial<UserSettings>;
+    return typeof parsed.codexCommandPath === "string"
+      ? { codexCommandPath: parsed.codexCommandPath }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveUserSettings(settings: UserSettings): Promise<void> {
+  await mkdir(path.dirname(userSettingsPath()), { recursive: true });
+  await writeFile(userSettingsPath(), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  userSettingsPromise = Promise.resolve(settings);
+}
+
+function userSettingsPath(): string {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle("workspace:choose", async () => {
     const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -179,32 +445,7 @@ function registerIpcHandlers(): void {
       return connectPromise;
     }
 
-    if (!adapter) {
-      adapter = new CodexAdapter({
-        clientInfo: {
-          name: "codep-desktop",
-          title: "Codex+ Desktop",
-          version: app.getVersion()
-        }
-      });
-
-      adapter.on("event", event => {
-        sendCodexEvent(event);
-      });
-      adapter.on("error", error => {
-        sendCodexEvent({
-          type: "raw.notification",
-          method: "adapter/error",
-          raw: {
-            method: "adapter/error",
-            params: { message: error.message }
-          }
-        });
-      });
-    }
-
-    connectPromise = adapter
-      .connect()
+    connectPromise = connectCodexAdapter()
       .then(response => {
         initializeResponse = response;
         return response;

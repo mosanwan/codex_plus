@@ -1,6 +1,6 @@
 {
   "name": "codex_plus",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -12,6 +12,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "package:desktop:deb": "node scripts/package-desktop-deb.mjs",
     "package:desktop:mac": "node scripts/package-desktop-mac.mjs",
+    "package:desktop:win": "node scripts/package-desktop-win.mjs",
     "deploy:relay": "node scripts/deploy-relay.mjs",
     "install:mobile:android": "node scripts/install-mobile-android.mjs",
     "dev:mobile": "npm run dev -w @codep/mobile -- --port 5175",
