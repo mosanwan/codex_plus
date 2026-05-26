@@ -184,6 +184,7 @@ interface RemoteCommandEnvelope {
     model?: string;
     effort?: ModelEffort;
     iconId?: string;
+    favorite?: boolean;
     requestId?: string | number;
     decision?: "accept" | "decline" | "cancel";
     mode?: "file" | "skill";
@@ -209,6 +210,8 @@ interface RemoteSnapshotWorkspace {
     status: string;
     iconId?: string;
     unread?: boolean;
+    favorite?: boolean;
+    activeTurnId?: string | null;
     turnStartedAt?: number | null;
     lastTurnDurationMs?: number | null;
   }>;
@@ -225,6 +228,7 @@ const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.collapsedWorkspaces";
 const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
 const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
 const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
+const CLOUD_RELAY_ENDPOINT = "https://codex-bridge.three.ink";
 const PERMISSIONS_STORAGE_KEY = "codep.defaultPermissions";
 const THEME_STORAGE_KEY = "codep.theme";
 const LANGUAGE_STORAGE_KEY = "codep.language";
@@ -244,6 +248,7 @@ const APP_VERSION_LABEL = `v${desktopPackage.version}`;
 const INITIAL_VISIBLE_TRANSCRIPT_COUNT = 40;
 const TRANSCRIPT_PAGE_SIZE = 40;
 const RELIABLE_RELAY_RETRY_MS = 5000;
+const DESKTOP_SNAPSHOT_DEBOUNCE_MS = 500;
 const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 750;
 const RELAY_RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 30000] as const;
 const RELAY_RECONNECT_JITTER_MS = 500;
@@ -780,7 +785,7 @@ export function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [relayEndpoint, setRelayEndpoint] = useState(
-    () => window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY) ?? "ws://127.0.0.1:8909"
+    () => readSavedRelayEndpoint()
   );
   const [relayApiKey, setRelayApiKey] = useState(
     () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
@@ -838,6 +843,8 @@ export function App() {
     {}
   );
   const reliableSnapshotRevisionRef = useRef(0);
+  const latestDesktopSnapshotRef = useRef<unknown>(null);
+  const desktopSnapshotTimerRef = useRef<number | null>(null);
   const reliableSnapshotTimerRef = useRef<number | null>(null);
   const lastReliableSnapshotSignatureRef = useRef("");
   const processedClientCommandIdsRef = useRef<Set<string>>(
@@ -966,10 +973,14 @@ export function App() {
     if (!threadId || !turnId) {
       return;
     }
-    setRunningTurnsBySession(previous => ({
-      ...previous,
-      [threadId]: turnId
-    }));
+    setRunningTurnsBySession(previous => {
+      const next = {
+        ...previous,
+        [threadId]: turnId
+      };
+      runningTurnsBySessionRef.current = next;
+      return next;
+    });
     if (!turnStartedAtBySessionRef.current[threadId]) {
       const next = {
         ...turnStartedAtBySessionRef.current,
@@ -1003,6 +1014,7 @@ export function App() {
       }
       const next = { ...previous };
       delete next[threadId];
+      runningTurnsBySessionRef.current = next;
       return next;
     });
   }
@@ -1038,10 +1050,12 @@ export function App() {
     }
 
     return desktopApi.onEvent(event => {
-      publishRelay({
-        type: "desktop.event",
-        payload: { event }
-      });
+      if (!isHighFrequencyRelayEvent(event)) {
+        publishRelay({
+          type: "desktop.event",
+          payload: { event }
+        });
+      }
 
       if (event.type === "turn.started") {
         markSessionTurnRunning(event.threadId, event.turnId);
@@ -1364,12 +1378,14 @@ export function App() {
   }, [deviceId, relayApiKey, relayEndpoint]);
 
   useEffect(() => {
-    publishDesktopSnapshot();
+    latestDesktopSnapshotRef.current = buildDesktopSnapshotPayload();
+    scheduleDesktopSnapshot();
     scheduleReliableDesktopSnapshot();
   }, [
     approvals,
     connectionState,
     contextUsage,
+    favoriteSessionIds,
     model,
     modelEffort,
     permissionMode,
@@ -1388,6 +1404,17 @@ export function App() {
     workspaceSessions,
     workspaces
   ]);
+
+  useEffect(() => {
+    return () => {
+      if (desktopSnapshotTimerRef.current !== null) {
+        window.clearTimeout(desktopSnapshotTimerRef.current);
+      }
+      if (reliableSnapshotTimerRef.current !== null) {
+        window.clearTimeout(reliableSnapshotTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (scrollRequest === 0) {
@@ -1535,7 +1562,7 @@ export function App() {
         mode === "file" && workspace
           ? desktopApi.searchWorkspaceFiles({ cwd: workspace, query, limit: 36 })
           : mode === "skill"
-            ? desktopApi.searchSkills({ query, limit: 36 })
+            ? desktopApi.searchSkills({ cwd: workspace ?? undefined, query, limit: 36 })
             : Promise.resolve([]);
 
       void search
@@ -1753,12 +1780,16 @@ export function App() {
   }
 
   function toggleFavoriteSession(threadId: string) {
+    setFavoriteSession(threadId, !favoriteSessionIds.has(threadId));
+  }
+
+  function setFavoriteSession(threadId: string, favorite: boolean) {
     setFavoriteSessionIds(previous => {
       const next = new Set(previous);
-      if (next.has(threadId)) {
-        next.delete(threadId);
-      } else {
+      if (favorite) {
         next.add(threadId);
+      } else {
+        next.delete(threadId);
       }
       saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
       return next;
@@ -2389,6 +2420,11 @@ export function App() {
       ackClientCommand(clientCommandId);
     }
 
+    if (envelope.type === "client.refresh_sessions") {
+      await refreshRelaySessions();
+      return;
+    }
+
     if (envelope.type === "client.search_composer") {
       const mode = envelope.payload?.mode;
       const requestId = envelope.payload?.requestId;
@@ -2404,7 +2440,7 @@ export function App() {
           mode === "file" && cwd
             ? await desktopApi.searchWorkspaceFiles({ cwd, query, limit })
             : mode === "skill"
-              ? await desktopApi.searchSkills({ query, limit })
+              ? await desktopApi.searchSkills({ cwd: cwd || undefined, query, limit })
               : [];
       } catch (error) {
         setStatus(error instanceof Error ? error.message : String(error));
@@ -2549,6 +2585,17 @@ export function App() {
       return;
     }
 
+    if (envelope.type === "client.set_session_favorite") {
+      const sessionId = envelope.payload?.sessionId;
+      const favorite = envelope.payload?.favorite;
+      if (sessionId && typeof favorite === "boolean") {
+        setFavoriteSession(sessionId, favorite);
+        setStatus(favorite ? "Session favorited from mobile." : "Session unfavorited from mobile.");
+      }
+      ackClientCommand(clientCommandId);
+      return;
+    }
+
     if (envelope.type === "client.resolve_approval") {
       const requestId = envelope.payload?.requestId;
       const decision = envelope.payload?.decision;
@@ -2580,6 +2627,36 @@ export function App() {
     }
   }
 
+  async function refreshRelaySessions() {
+    if (!desktopApi || connectionState !== "connected") {
+      scheduleDesktopSnapshot();
+      return;
+    }
+
+    const targetWorkspaces = workspaces.length > 0
+      ? workspaces
+      : workspace
+        ? [workspace]
+        : [];
+    if (targetWorkspaces.length === 0) {
+      publishDesktopSnapshot();
+      return;
+    }
+
+    setStatus("Refreshing sessions for mobile.");
+    await Promise.all(
+      targetWorkspaces.map(cwd =>
+        refreshSessions(cwd, {
+          openPreferred: false,
+          preserveSession:
+            cwd === activeWorkspaceRef.current ? activeSessionRef.current : null
+        })
+      )
+    );
+    scheduleDesktopSnapshot();
+    scheduleReliableDesktopSnapshot();
+  }
+
   function buildDesktopSnapshotPayload(): unknown {
     const snapshotWorkspaces: RemoteSnapshotWorkspace[] = workspaces.map(cwd => ({
       path: cwd,
@@ -2591,6 +2668,8 @@ export function App() {
         status: runningTurnsBySession[item.threadId] ? "working" : "ready",
         iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
         unread: unreadSessionIds.has(item.threadId),
+        favorite: favoriteSessionIds.has(item.threadId),
+        activeTurnId: runningTurnsBySession[item.threadId] ?? null,
         turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
         lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
       }))
@@ -2613,6 +2692,8 @@ export function App() {
         status: runningTurnsBySession[item.threadId] ? "working" : "ready",
         iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
         unread: unreadSessionIds.has(item.threadId),
+        favorite: favoriteSessionIds.has(item.threadId),
+        activeTurnId: runningTurnsBySession[item.threadId] ?? null,
         turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
         lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
       })),
@@ -2635,11 +2716,27 @@ export function App() {
     };
   }
 
-  function publishDesktopSnapshot() {
+  function publishDesktopSnapshot(snapshot = buildDesktopSnapshotPayload()) {
+    latestDesktopSnapshotRef.current = snapshot;
     publishRelay({
       type: "desktop.snapshot",
-      payload: buildDesktopSnapshotPayload()
+      payload: snapshot
     });
+  }
+
+  function scheduleDesktopSnapshot() {
+    if (DEMO_MODE) {
+      return;
+    }
+    if (desktopSnapshotTimerRef.current !== null) {
+      return;
+    }
+    desktopSnapshotTimerRef.current = window.setTimeout(() => {
+      desktopSnapshotTimerRef.current = null;
+      publishDesktopSnapshot(
+        latestDesktopSnapshotRef.current ?? buildDesktopSnapshotPayload()
+      );
+    }, DESKTOP_SNAPSHOT_DEBOUNCE_MS);
   }
 
   function scheduleReliableDesktopSnapshot() {
@@ -2656,7 +2753,7 @@ export function App() {
   }
 
   function publishReliableDesktopSnapshot() {
-    const snapshot = buildDesktopSnapshotPayload();
+    const snapshot = latestDesktopSnapshotRef.current ?? buildDesktopSnapshotPayload();
     const signature = JSON.stringify(snapshot);
     if (signature === lastReliableSnapshotSignatureRef.current) {
       return;
@@ -3142,21 +3239,28 @@ export function App() {
   }
 
   async function interruptTurn() {
-    if (!desktopApi || !session || !activeTurnId) {
+    const targetSession = activeSessionRef.current;
+    const targetTurnId = targetSession
+      ? runningTurnsBySessionRef.current[targetSession.threadId]
+      : null;
+    if (!desktopApi || !targetSession || !targetTurnId) {
       return;
     }
 
-    const interruptedTurnId = activeTurnId;
-    setStatus("Interrupting current turn.");
+    setStatus("Interrupt requested.");
+    clearSessionTurnRunning(targetSession.threadId);
     try {
       await desktopApi.interruptTurn({
-        threadId: session.threadId,
-        turnId: interruptedTurnId
+        threadId: targetSession.threadId,
+        turnId: targetTurnId
       });
-      clearSessionTurnRunning(session.threadId);
       setStatus("Turn interrupted.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      setStatus(
+        error instanceof Error
+          ? `Stop request failed; local working state was reset. ${error.message}`
+          : `Stop request failed; local working state was reset. ${String(error)}`
+      );
     }
   }
 
@@ -4725,6 +4829,27 @@ function readSavedLanguage(): UILanguage {
   return saved === "en" || saved === "zh-CN" ? saved : "zh-CN";
 }
 
+function readSavedRelayEndpoint(): string {
+  const saved = window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY);
+  const endpoint =
+    !saved || isLegacyDefaultRelayEndpoint(saved) ? CLOUD_RELAY_ENDPOINT : saved.trim();
+  if (saved !== endpoint) {
+    window.localStorage.setItem(RELAY_ENDPOINT_STORAGE_KEY, endpoint);
+  }
+  return endpoint;
+}
+
+function isLegacyDefaultRelayEndpoint(value: string): boolean {
+  const normalized = value.trim().replace(/\/+$/, "").toLowerCase();
+  return (
+    normalized === "ws://127.0.0.1:8909" ||
+    normalized === "ws://localhost:8909" ||
+    normalized === "ws://:8909" ||
+    normalized === "wss://tx-bridge.three.ink" ||
+    normalized === "https://tx-bridge.three.ink"
+  );
+}
+
 function readSavedModel(): string {
   return window.localStorage.getItem(MODEL_STORAGE_KEY) ?? "gpt-5.5";
 }
@@ -5745,6 +5870,14 @@ function threadIdFromRawNotification(
     stringOrUndefined(thread.id) ??
     stringOrUndefined(thread.threadId) ??
     null
+  );
+}
+
+function isHighFrequencyRelayEvent(event: CodexAdapterEvent): boolean {
+  return (
+    event.type === "message.delta" ||
+    event.type === "reasoning.delta" ||
+    event.type === "command.delta"
   );
 }
 

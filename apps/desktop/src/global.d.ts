@@ -70,8 +70,10 @@ declare global {
         limit?: number;
       }): Promise<ComposerSuggestion[]>;
       searchSkills(options?: {
+        cwd?: string;
         query?: string;
         limit?: number;
+        forceReload?: boolean;
       }): Promise<ComposerSuggestion[]>;
       saveRemoteAttachments(
         attachments: RemoteAttachmentInput[]

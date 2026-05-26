@@ -113,6 +113,34 @@ export interface ModelListResponse {
   nextCursor: string | null;
 }
 
+export interface SkillInterface {
+  displayName?: string;
+  shortDescription?: string;
+  defaultPrompt?: string;
+  [key: string]: unknown;
+}
+
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  shortDescription?: string;
+  interface?: SkillInterface;
+  path: string;
+  scope?: string;
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
+export interface SkillsListEntry {
+  cwd: string;
+  skills: SkillMetadata[];
+  errors: unknown[];
+}
+
+export interface SkillsListResponse {
+  data: SkillsListEntry[];
+}
+
 export type CodexStatusResponse = unknown;
 
 export interface TurnStartResponse {

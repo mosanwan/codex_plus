@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -687,6 +688,12 @@ func (h *hub) register(p *peer) {
 	if p.role == "desktop" {
 		r.desktop[p] = struct{}{}
 	} else {
+		for existing := range r.client {
+			if existing.clientDeviceID == p.clientDeviceID {
+				delete(r.client, existing)
+				_ = existing.conn.Close()
+			}
+		}
 		r.client[p] = struct{}{}
 	}
 	r.lastSeen = time.Now().UTC()
@@ -729,13 +736,7 @@ func (h *hub) unregister(p *peer) {
 
 func (h *hub) broadcastPresenceLocked(r *room) {
 	now := time.Now().UTC()
-	clients := make([]relayPresenceClient, 0, len(r.client))
-	for p := range r.client {
-		clients = append(clients, relayPresenceClient{
-			ClientDeviceID: p.clientDeviceID,
-			ConnectedAt:    p.connectedAt,
-		})
-	}
+	clients := uniquePresenceClients(r.client)
 
 	message := mustJSON(relayEnvelope{
 		Type:     "relay.presence",
@@ -746,7 +747,7 @@ func (h *hub) broadcastPresenceLocked(r *room) {
 		Payload: mustRawJSON(relayPresencePayload{
 			DeviceID:     r.deviceID,
 			DesktopCount: len(r.desktop),
-			ClientCount:  len(r.client),
+			ClientCount:  len(clients),
 			Connected:    len(r.desktop) > 0,
 			LastSeen:     r.lastSeen,
 			Clients:      clients,
@@ -933,12 +934,13 @@ func (h *hub) devices() []deviceSummary {
 
 	devices := make([]deviceSummary, 0, len(h.rooms))
 	for _, r := range h.rooms {
+		clientCount := len(uniquePresenceClients(r.client))
 		devices = append(devices, deviceSummary{
 			UserID:          r.userID,
 			UserName:        r.userName,
 			DeviceID:        r.deviceID,
 			DesktopCount:    len(r.desktop),
-			ClientCount:     len(r.client),
+			ClientCount:     clientCount,
 			LastSeen:        r.lastSeen,
 			Connected:       len(r.desktop) > 0,
 			RelayTransports: []string{"websocket"},
@@ -956,18 +958,45 @@ func (h *hub) devicesForUser(userID string) []deviceSummary {
 		if r.userID != userID {
 			continue
 		}
+		clientCount := len(uniquePresenceClients(r.client))
 		devices = append(devices, deviceSummary{
 			UserID:          r.userID,
 			UserName:        r.userName,
 			DeviceID:        r.deviceID,
 			DesktopCount:    len(r.desktop),
-			ClientCount:     len(r.client),
+			ClientCount:     clientCount,
 			LastSeen:        r.lastSeen,
 			Connected:       len(r.desktop) > 0,
 			RelayTransports: []string{"websocket"},
 		})
 	}
 	return devices
+}
+
+func uniquePresenceClients(peers map[*peer]struct{}) []relayPresenceClient {
+	latestByID := make(map[string]relayPresenceClient)
+	for p := range peers {
+		clientDeviceID := p.clientDeviceID
+		if clientDeviceID == "" {
+			clientDeviceID = "client:" + p.conn.RemoteAddr().String()
+		}
+		current, exists := latestByID[clientDeviceID]
+		if !exists || p.connectedAt.After(current.ConnectedAt) {
+			latestByID[clientDeviceID] = relayPresenceClient{
+				ClientDeviceID: clientDeviceID,
+				ConnectedAt:    p.connectedAt,
+			}
+		}
+	}
+
+	clients := make([]relayPresenceClient, 0, len(latestByID))
+	for _, client := range latestByID {
+		clients = append(clients, client)
+	}
+	sort.Slice(clients, func(left, right int) bool {
+		return clients[left].ClientDeviceID < clients[right].ClientDeviceID
+	})
+	return clients
 }
 
 func (h *hub) ensureRoom(userID string, userName string, deviceID string) *room {

@@ -82,13 +82,13 @@ const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
 const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
 const RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY = "codep.relayDesktopDeviceId";
 const RELAY_LAST_EVENT_ID_STORAGE_KEY = "codep.relayLastEventId";
+const CLOUD_RELAY_ENDPOINT = "https://codex-bridge.three.ink";
 const SYSTEM_NOTIFICATIONS_ENABLED_STORAGE_KEY = "codep.systemNotificationsEnabled";
 const NOTIFICATION_VIBRATION_ENABLED_STORAGE_KEY = "codep.notificationVibrationEnabled";
 const NOTIFICATION_SOUND_ENABLED_STORAGE_KEY = "codep.notificationSoundEnabled";
 const NOTIFICATION_SOUND_FILE = "codep_notify.wav";
-const NOTIFICATION_SOUND_RESOURCE = "codep_notify";
 const NOTIFICATION_CHANNEL_PREFIX = "codep_turn_complete";
-const NOTIFICATION_CHANNEL_VERSION = "v2";
+const NOTIFICATION_CHANNEL_VERSION = "v3";
 const NOTIFICATION_BODY_MAX_CHARS = 100;
 const PENDING_RELAY_COMMANDS_STORAGE_KEY = "codep.pendingRelayCommands";
 const RELIABLE_RELAY_RETRY_MS = 5000;
@@ -647,11 +647,7 @@ export function App() {
   const [scrollRequest, setScrollRequest] = useState(0);
   const [historyLoadRequest, setHistoryLoadRequest] = useState(0);
   const [relayEndpoint, setRelayEndpoint] = useState(
-    () =>
-      normalizedRelayEndpoint(
-        window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY) ??
-          defaultMobileRelayEndpoint()
-      )
+    () => readSavedRelayEndpoint()
   );
   const [relayApiKey, setRelayApiKey] = useState(
     () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
@@ -688,6 +684,7 @@ export function App() {
     sound: notificationSoundEnabled,
     vibration: notificationVibrationEnabled
   });
+  const appForegroundRef = useRef(isAppForeground());
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const previousHistoryScrollHeight = useRef(0);
@@ -724,7 +721,26 @@ export function App() {
     systemNotificationsEnabled
   ]);
   useEffect(() => {
+    const updateAppForeground = () => {
+      appForegroundRef.current = isAppForeground();
+    };
+
+    updateAppForeground();
+    document.addEventListener("visibilitychange", updateAppForeground);
+    window.addEventListener("focus", updateAppForeground);
+    window.addEventListener("blur", updateAppForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", updateAppForeground);
+      window.removeEventListener("focus", updateAppForeground);
+      window.removeEventListener("blur", updateAppForeground);
+    };
+  }, []);
+  useEffect(() => {
     if (!systemNotificationsEnabled) {
+      void cleanupTurnCompleteNotificationChannels({
+        sound: notificationSoundEnabled,
+        vibration: notificationVibrationEnabled
+      });
       return;
     }
     void ensureTurnCompleteNotificationReady({
@@ -736,6 +752,14 @@ export function App() {
     notificationVibrationEnabled,
     systemNotificationsEnabled
   ]);
+
+  useEffect(() => {
+    if (activeView !== "sessions") {
+      return;
+    }
+    publishReliableRelayCommand("client.refresh_sessions");
+  }, [activeView, relayState]);
+
   const activeSession =
     visibleWorkspaces
       .flatMap(workspace => workspace.sessions)
@@ -1394,15 +1418,41 @@ export function App() {
   }
 
   function toggleFavoriteSession(sessionId: string) {
+    const session =
+      visibleWorkspaces
+        .flatMap(workspace => workspace.sessions)
+        .find(item => item.id === sessionId) ??
+      sessions.find(item => item.id === sessionId);
+    const nextFavorite = session
+      ? !isSessionFavorite(session, favoriteSessionIds)
+      : !favoriteSessionIds.has(sessionId);
+
     setFavoriteSessionIds(previous => {
       const next = new Set(previous);
-      if (next.has(sessionId)) {
-        next.delete(sessionId);
-      } else {
+      if (nextFavorite) {
         next.add(sessionId);
+      } else {
+        next.delete(sessionId);
       }
       saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
       return next;
+    });
+    setWorkspaces(previous =>
+      previous.map(workspace => ({
+        ...workspace,
+        sessions: workspace.sessions.map(session =>
+          session.id === sessionId ? { ...session, favorite: nextFavorite } : session
+        )
+      }))
+    );
+    setSessions(previous =>
+      previous.map(session =>
+        session.id === sessionId ? { ...session, favorite: nextFavorite } : session
+      )
+    );
+    publishReliableRelayCommand("client.set_session_favorite", {
+      sessionId,
+      favorite: nextFavorite
     });
   }
 
@@ -1656,7 +1706,11 @@ export function App() {
     if (!alreadyProcessed && event.type === "turn.completed") {
       const sessionId = event.session_id ?? "";
       const activeRelaySessionId = activeSessionIdRef.current;
-      void notifyTurnCompleted(event, notificationSettingsRef.current);
+      void notifyTurnCompleted(
+        event,
+        notificationSettingsRef.current,
+        appForegroundRef.current
+      );
       const payload = asRecord(event.payload);
       const durationMs =
         typeof payload.duration_ms === "number" ? payload.duration_ms : null;
@@ -1839,12 +1893,12 @@ export function App() {
             <PageHeader
               action={
                 <>
-	                  <RelayHeaderStatus
-	                    language={language}
-	                    relayError={relayError}
-	                    relayPresence={relayPresence}
-	                    relayState={relayState}
-	                  />
+                  <HeaderConnectionStatus
+                    language={language}
+                    relayError={relayError}
+                    relayPresence={relayPresence}
+                    relayState={relayState}
+                  />
                   <button
                     aria-label={t("runtimeSettingsTitle")}
                     className="headerSettingsButton"
@@ -1960,7 +2014,7 @@ function PageHeader({
   );
 }
 
-function RelayHeaderStatus({
+function HeaderConnectionStatus({
   language,
   relayError,
   relayPresence,
@@ -1971,20 +2025,31 @@ function RelayHeaderStatus({
   relayPresence: RelayPresence | null;
   relayState: RelayConnectionState;
 }) {
-  const state = relayHeaderState(relayState, relayPresence);
-  const label = relayHeaderLabel(state, language, relayPresence);
-  const detail = relayError ? `${label}: ${relayError}` : label;
+  const relayConnected = relayState === "connected";
+  const desktopConnected = Boolean(relayPresence?.desktopCount);
+  const relayLabel = relayError
+    ? `${relayStateLabel(relayState, language)}: ${relayError}`
+    : relayStateLabel(relayState, language);
+  const desktopLabel = desktopPresenceLabel(relayPresence, language);
 
   return (
-    <div
-      aria-label={detail}
-      className="headerRelayStatus"
-      data-state={state}
-      role="status"
-      title={detail}
-    >
-      <span className="headerRelayStatusDot" />
-      <span className="headerRelayStatusLabel">{label}</span>
+    <div className="headerConnectionStatus" role="status">
+      <span
+        aria-label={relayLabel}
+        className="headerConnectionIcon"
+        data-connected={relayConnected}
+        title={relayLabel}
+      >
+        <Globe size={14} strokeWidth={2.2} />
+      </span>
+      <span
+        aria-label={desktopLabel}
+        className="headerConnectionIcon"
+        data-connected={desktopConnected}
+        title={desktopLabel}
+      >
+        <Laptop size={14} strokeWidth={2.2} />
+      </span>
     </div>
   );
 }
@@ -2110,7 +2175,7 @@ function SessionsPage({
   );
   const favoriteSessions = workspaces.flatMap(workspace =>
     workspace.sessions
-      .filter(session => favoriteSessionIds.has(session.id))
+      .filter(session => isSessionFavorite(session, favoriteSessionIds))
       .map(session => ({ workspace, session }))
   );
 
@@ -2208,7 +2273,7 @@ function SessionsPage({
                           workspace.sessions.map(session => (
                             <MobileSessionRow
                               active={session.id === activeSessionId}
-                              favorite={favoriteSessionIds.has(session.id)}
+                              favorite={isSessionFavorite(session, favoriteSessionIds)}
                               key={session.id}
                               onFavorite={() => onToggleFavorite(session.id)}
                               onIconChange={iconId => onSessionIconChange(session.id, iconId)}
@@ -2234,7 +2299,7 @@ function SessionsPage({
               recentSessions.map(({ workspace, session }) => (
                 <MobileSessionRow
                   active={session.id === activeSessionId}
-                  favorite={favoriteSessionIds.has(session.id)}
+                  favorite={isSessionFavorite(session, favoriteSessionIds)}
                   key={session.id}
                   meta={`${workspace.name} · ${session.updatedAt}`}
                   onFavorite={() => onToggleFavorite(session.id)}
@@ -2493,6 +2558,7 @@ function ChatPage({
   const canSend =
     !composerDisabled && (composer.trim().length > 0 || pendingAttachments.length > 0);
   const showComposerStatus = !isWorking && !session && desktopStatus;
+  const showWorkingStatus = isWorking && Boolean(session);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useLayoutEffect(() => {
@@ -2569,6 +2635,13 @@ function ChatPage({
       </div>
 
       <div className="composerDock">
+        {showWorkingStatus ? (
+          <WorkingTurnStatus
+            session={session}
+            t={t}
+            turnDurationMs={turnDurationMs}
+          />
+        ) : null}
         {showComposerStatus ? (
           <div className="composerStatus" data-state="idle">
             <span className="statusDot" aria-hidden="true" />
@@ -2743,6 +2816,39 @@ function ChatPage({
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+function WorkingTurnStatus({
+  session,
+  t,
+  turnDurationMs
+}: {
+  session?: Session;
+  t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
+  turnDurationMs: number | null;
+}) {
+  const turnLabel =
+    session?.activeTurnId?.slice(0, 8) ??
+    session?.id.slice(0, 8) ??
+    "";
+
+  return (
+    <div className="workingTurnStatus" role="status">
+      <span className="workingTurnDot" aria-hidden="true" />
+      <strong>{t("working")}</strong>
+      {turnDurationMs !== null ? (
+        <span className="workingTurnDuration">
+          {formatTurnDuration(turnDurationMs)}
+        </span>
+      ) : null}
+      <span className="workingTurnActivity" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+      {turnLabel ? <code>{turnLabel}</code> : null}
     </div>
   );
 }
@@ -3647,7 +3753,8 @@ function workspaceForSession(
 
 function workspaceName(path: string): string {
   const normalized = path.replace(/\/+$/, "");
-  return normalized.split("/").filter(Boolean).at(-1) || path || "Workspace";
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] || path || "Workspace";
 }
 
 function readStringList(key: string): string[] {
@@ -3695,8 +3802,29 @@ function readSavedLanguage(): UILanguage {
 }
 
 function defaultMobileRelayEndpoint(): string {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.hostname}:8909`;
+  return CLOUD_RELAY_ENDPOINT;
+}
+
+function readSavedRelayEndpoint(): string {
+  const saved = window.localStorage.getItem(RELAY_ENDPOINT_STORAGE_KEY);
+  const endpoint = normalizedRelayEndpoint(
+    !saved || isLegacyDefaultRelayEndpoint(saved) ? defaultMobileRelayEndpoint() : saved
+  );
+  if (saved !== endpoint) {
+    window.localStorage.setItem(RELAY_ENDPOINT_STORAGE_KEY, endpoint);
+  }
+  return endpoint;
+}
+
+function isLegacyDefaultRelayEndpoint(value: string): boolean {
+  const normalized = value.trim().replace(/\/+$/, "").toLowerCase();
+  return (
+    normalized === "ws://127.0.0.1:8909" ||
+    normalized === "ws://localhost:8909" ||
+    normalized === "ws://:8909" ||
+    normalized === "wss://tx-bridge.three.ink" ||
+    normalized === "https://tx-bridge.three.ink"
+  );
 }
 
 function normalizedRelayEndpoint(value: string): string {
@@ -3802,7 +3930,7 @@ function textFor(
   let text = String(UI_TEXT[language][key] ?? UI_TEXT.en[key]);
   if (values) {
     Object.entries(values).forEach(([name, value]) => {
-      text = text.replaceAll(`{${name}}`, String(value));
+      text = text.split(`{${name}}`).join(String(value));
     });
   }
   return text;
@@ -3897,30 +4025,6 @@ function desktopPresenceLabel(
   return presence?.desktopCount ? textFor(language, "desktopOnline") : textFor(language, "desktopOffline");
 }
 
-function relayHeaderState(
-  value: RelayConnectionState,
-  presence: RelayPresence | null
-): "connected" | "connecting" | "reconnecting" | "disconnected" {
-  if (value === "connecting" || value === "reconnecting") {
-    return value;
-  }
-  if (value === "connected" && presence?.desktopCount) {
-    return "connected";
-  }
-  return "disconnected";
-}
-
-function relayHeaderLabel(
-  value: ReturnType<typeof relayHeaderState>,
-  language: UILanguage,
-  presence: RelayPresence | null
-): string {
-  if (value === "connected") {
-    return desktopPresenceLabel(presence, language);
-  }
-  return textFor(language, value);
-}
-
 function contextLabel(
   usage: { usedTokens: number; contextWindow: number | null } | null,
   language: UILanguage = "en"
@@ -3960,9 +4064,17 @@ function formatTurnDuration(milliseconds: number): string {
 }
 
 function sessionSortValue(session: Session): number {
-  const dateText = session.updatedAt.split(" · ").at(-1) ?? session.updatedAt;
+  const dateParts = session.updatedAt.split(" · ");
+  const dateText = dateParts[dateParts.length - 1] ?? session.updatedAt;
   const value = Date.parse(dateText);
   return Number.isFinite(value) ? value : 0;
+}
+
+function isSessionFavorite(
+  session: Session,
+  favoriteSessionIds: Set<string>
+): boolean {
+  return session.favorite === true || favoriteSessionIds.has(session.id);
 }
 
 function isHiddenChatMessage(message: Message): boolean {
@@ -3980,8 +4092,8 @@ function visibleDesktopStatus(status: string): string {
 }
 
 function uniqueId(): string {
-  return typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
     : Date.now().toString(36);
 }
 
@@ -4276,10 +4388,11 @@ function rememberRelayEventId(currentEventId: number, id: number): number {
 
 async function notifyTurnCompleted(
   event: RelayEventRecord,
-  settings: TurnCompleteNotificationSettings
+  settings: TurnCompleteNotificationSettings,
+  appInForeground: boolean
 ) {
   try {
-    if (!settings.enabled || event.type !== "turn.completed") {
+    if (!settings.enabled || event.type !== "turn.completed" || appInForeground) {
       return;
     }
     if (Capacitor.getPlatform() !== "android") {
@@ -4376,18 +4489,44 @@ async function ensureTurnCompleteNotificationReady(
     return false;
   }
 
+  await cleanupTurnCompleteNotificationChannels(settings);
   await LocalNotifications.createChannel({
     id: turnCompleteNotificationChannelId(settings),
     name: "Codex turn completion",
     description: "Notifications shown when a Codex turn completes.",
     importance: settings.sound || settings.vibration ? 5 : 3,
     visibility: 1,
-    sound: settings.sound ? NOTIFICATION_SOUND_RESOURCE : undefined,
+    sound: settings.sound ? NOTIFICATION_SOUND_FILE : undefined,
     vibration: settings.vibration,
     lights: true,
     lightColor: "#ff3b30"
   });
   return true;
+}
+
+async function cleanupTurnCompleteNotificationChannels(
+  settings: Pick<TurnCompleteNotificationSettings, "sound" | "vibration">
+) {
+  if (Capacitor.getPlatform() !== "android") {
+    return;
+  }
+
+  const currentChannelId = turnCompleteNotificationChannelId(settings);
+  try {
+    const { channels } = await LocalNotifications.listChannels();
+    await Promise.all(
+      channels
+        .map(channel => channel.id)
+        .filter(
+          channelId =>
+            channelId.startsWith(`${NOTIFICATION_CHANNEL_PREFIX}_`) &&
+            channelId !== currentChannelId
+        )
+        .map(channelId => LocalNotifications.deleteChannel({ id: channelId }))
+    );
+  } catch {
+    // Channel cleanup is best effort; notification delivery should still work.
+  }
 }
 
 function turnCompleteNotificationChannelId(
@@ -4403,6 +4542,10 @@ function notificationIdFromEvent(id: number): number {
   return normalized > 0 && normalized <= 2147483647
     ? normalized
     : Math.floor(Date.now() % 2147483647);
+}
+
+function isAppForeground(): boolean {
+  return document.visibilityState === "visible";
 }
 
 function stringFromUnknown(value: unknown): string {

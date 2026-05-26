@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld("codexApp", {
   chooseNotificationSoundFile: () => ipcRenderer.invoke("notification:sound:choose"),
   searchWorkspaceFiles: (options: { cwd: string; query?: string; limit?: number }) =>
     ipcRenderer.invoke("composer:files:search", options),
-  searchSkills: (options?: { query?: string; limit?: number }) =>
+  searchSkills: (options?: { cwd?: string; query?: string; limit?: number; forceReload?: boolean }) =>
     ipcRenderer.invoke("composer:skills:search", options ?? {}),
   saveRemoteAttachments: (attachments: RemoteAttachmentInput[]) =>
     ipcRenderer.invoke("attachment:remote", attachments),

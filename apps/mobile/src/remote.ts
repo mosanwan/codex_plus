@@ -18,6 +18,8 @@ export interface Session {
   status: "ready" | "working" | "approval";
   iconId?: string;
   unread?: boolean;
+  favorite?: boolean;
+  activeTurnId?: string | null;
   turnStartedAt?: number | null;
   lastTurnDurationMs?: number | null;
 }

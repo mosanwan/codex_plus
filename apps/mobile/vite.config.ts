@@ -5,6 +5,7 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   build: {
+    target: "chrome70",
     outDir: "dist",
     emptyOutDir: true
   },

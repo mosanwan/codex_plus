@@ -17,6 +17,7 @@ import {
   type InitializeResponse,
   type JsonObject,
   type ReasoningEffort,
+  type SkillMetadata,
   type UserInput
 } from "@codep/codex-adapter";
 
@@ -165,7 +166,7 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(
     "composer:skills:search",
-    async (_event, options: { query?: string; limit?: number } = {}) =>
+    async (_event, options: { cwd?: string; query?: string; limit?: number; forceReload?: boolean } = {}) =>
       searchCodexSkills(options)
   );
 
@@ -544,6 +545,72 @@ async function searchWorkspaceFiles(options: {
 }
 
 async function searchCodexSkills(options: {
+  cwd?: string;
+  query?: string;
+  limit?: number;
+  forceReload?: boolean;
+}): Promise<ComposerSuggestion[]> {
+  if (adapter) {
+    try {
+      return await searchCodexServerSkills(options);
+    } catch {
+      // Fall back for older Codex versions that do not expose skills/list.
+    }
+  }
+
+  return searchLocalCodexSkills(options);
+}
+
+async function searchCodexServerSkills(options: {
+  cwd?: string;
+  query?: string;
+  limit?: number;
+  forceReload?: boolean;
+}): Promise<ComposerSuggestion[]> {
+  const query = normalizeSearchQuery(options.query);
+  const limit = clampLimit(options.limit);
+  const response = await adapter!.listSkills({
+    cwds: options.cwd ? [path.resolve(options.cwd)] : undefined,
+    forceReload: options.forceReload
+  });
+  const results: Array<ComposerSuggestion & { score: number }> = [];
+  const seenNames = new Set<string>();
+
+  for (const entry of response.data) {
+    for (const skill of entry.skills) {
+      if (!isEnabledSkill(skill) || seenNames.has(skill.name)) {
+        continue;
+      }
+      seenNames.add(skill.name);
+
+      const label = skill.interface?.displayName || skill.name;
+      const detail =
+        skill.description ||
+        skill.shortDescription ||
+        skill.interface?.shortDescription ||
+        "Skill";
+      const searchable = `${label} ${skill.name} ${detail}`;
+      if (!matchesSearch(searchable, query)) {
+        continue;
+      }
+
+      results.push({
+        id: skill.path || `${entry.cwd}:${skill.name}`,
+        type: "skill",
+        label,
+        name: skill.name,
+        detail,
+        insertText: `$${skill.name}`,
+        path: skill.path,
+        score: searchScore(searchable, query)
+      });
+    }
+  }
+
+  return sortComposerSuggestions(results, limit);
+}
+
+async function searchLocalCodexSkills(options: {
   query?: string;
   limit?: number;
 }): Promise<ComposerSuggestion[]> {
@@ -586,10 +653,7 @@ async function searchCodexSkills(options: {
     });
   }
 
-  return results
-    .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
-    .slice(0, limit)
-    .map(({ score: _score, ...item }) => item);
+  return sortComposerSuggestions(results, limit);
 }
 
 async function saveRemoteAttachments(
@@ -823,6 +887,20 @@ function clampLimit(value: number | undefined): number {
     return 30;
   }
   return Math.min(Math.max(Math.trunc(value), 1), 80);
+}
+
+function sortComposerSuggestions(
+  results: Array<ComposerSuggestion & { score: number }>,
+  limit: number
+): ComposerSuggestion[] {
+  return results
+    .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
+    .slice(0, limit)
+    .map(({ score: _score, ...item }) => item);
+}
+
+function isEnabledSkill(skill: SkillMetadata): boolean {
+  return skill.enabled !== false;
 }
 
 function matchesSearch(value: string, query: string): boolean {

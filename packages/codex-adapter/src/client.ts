@@ -20,6 +20,7 @@ import type {
   ThreadListOptions,
   ThreadListResponse,
   ModelListResponse,
+  SkillsListResponse,
   CodexStatusResponse,
   ThreadNameSetResponse,
   TurnStartOptions,
@@ -178,8 +179,16 @@ export class CodexAdapter {
     });
   }
 
-  interruptTurn(threadId: string, turnId: string): Promise<unknown> {
-    return this.request("turn/interrupt", { threadId, turnId });
+  async interruptTurn(threadId: string, turnId: string): Promise<unknown> {
+    try {
+      return await this.request("turn/interrupt", { threadId, turnId });
+    } catch (error) {
+      const activeTurnId = await this.activeTurnId(threadId);
+      if (activeTurnId && activeTurnId !== turnId) {
+        return this.request("turn/interrupt", { threadId, turnId: activeTurnId });
+      }
+      throw error;
+    }
   }
 
   readThread(threadId: string, includeTurns = true): Promise<unknown> {
@@ -217,6 +226,19 @@ export class CodexAdapter {
     );
   }
 
+  listSkills(options: {
+    cwds?: string[];
+    forceReload?: boolean;
+  } = {}): Promise<SkillsListResponse> {
+    return this.request(
+      "skills/list",
+      definedOnly({
+        cwds: options.cwds,
+        forceReload: options.forceReload
+      })
+    );
+  }
+
   getStatus(): Promise<CodexStatusResponse> {
     return this.request("status");
   }
@@ -236,6 +258,19 @@ export class CodexAdapter {
 
   private request<T>(method: string, params?: unknown): Promise<T> {
     return this.requireRpc().request<T>(method, params);
+  }
+
+  private async activeTurnId(threadId: string): Promise<string | null> {
+    try {
+      const response = await this.readThread(threadId, true);
+      const record = response && typeof response === "object"
+        ? response as { thread?: { turns?: Array<{ id?: unknown; status?: unknown }> } }
+        : {};
+      const activeTurn = record.thread?.turns?.find(turn => turn.status === "inProgress");
+      return typeof activeTurn?.id === "string" && activeTurn.id ? activeTurn.id : null;
+    } catch {
+      return null;
+    }
   }
 
   private requireRpc(): JsonRpcClient {
