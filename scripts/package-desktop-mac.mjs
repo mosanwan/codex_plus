@@ -97,17 +97,7 @@ run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, zipPath]);
 await mkdir(dmgRoot, { recursive: true });
 run("ditto", [appPath, path.join(dmgRoot, `${productName}.app`)]);
 await symlink("/Applications", path.join(dmgRoot, "Applications"));
-run("hdiutil", [
-  "create",
-  "-volname",
-  productName,
-  "-srcfolder",
-  dmgRoot,
-  "-ov",
-  "-format",
-  "UDZO",
-  dmgPath
-]);
+createDmg();
 
 console.log(`Built ${path.relative(repoRoot, zipPath)}`);
 console.log(`Built ${path.relative(repoRoot, dmgPath)}`);
@@ -133,6 +123,45 @@ function setPlistValue(plistPath, key, type, value) {
     execFileSync(command, setArgs, { stdio: "ignore" });
   } catch {
     execFileSync(command, addArgs, { stdio: "inherit" });
+  }
+}
+
+function createDmg() {
+  const args = [
+    "create",
+    "-volname",
+    productName,
+    "-srcfolder",
+    dmgRoot,
+    "-ov",
+    "-format",
+    "UDZO",
+    dmgPath
+  ];
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      run("hdiutil", args);
+      return;
+    } catch (error) {
+      if (attempt === 3) {
+        throw error;
+      }
+
+      try {
+        execFileSync("hdiutil", ["detach", `/Volumes/${productName}`, "-force"], {
+          stdio: "ignore"
+        });
+      } catch {
+        // The volume is usually not mounted; this is just a best-effort cleanup.
+      }
+      try {
+        execFileSync("rm", ["-f", dmgPath], { stdio: "ignore" });
+      } catch {
+        // Retry will report the real hdiutil failure if cleanup did not help.
+      }
+      execFileSync("sleep", [String(attempt)]);
+    }
   }
 }
 
