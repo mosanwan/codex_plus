@@ -25,15 +25,10 @@ presence, device discovery, and event replay.
 Desktop app with workspace sessions, assistant output, diff details, composer
 tools, and Relay/mobile presence in the sidebar.
 
-![Codex+ mobile sessions](ref/images/mb1.jpg)
+![Codex+ mobile app](ref/images/m1.png)
 
-Mobile session browser grouped by workspace, with recent/favorite filters and
-workspace-open controls.
-
-![Codex+ mobile chat](ref/images/mb2.jpg)
-
-Mobile chat view connected to a desktop session, including desktop presence,
-message composer, file mentions, and skill mentions.
+Mobile session browser and chat view, including workspace sessions, desktop
+presence, message composer, file mentions, and skill mentions.
 
 ## What This Project Does
 
