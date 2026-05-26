@@ -58,7 +58,7 @@ presence, message composer, file mentions, and skill mentions.
 ├── services/
 │   └── relay/                # Go WebSocket Relay, admin UI, SQLite event store
 ├── scripts/
-│   ├── deploy-relay-prod.mjs # Production Relay deployment helper
+│   ├── deploy-relay.mjs      # Relay deployment helper
 │   └── install-mobile-android.mjs
 ├── ref/images/               # README screenshots
 └── codex-desktop-mobile-plan.md
@@ -203,10 +203,10 @@ Relay endpoint: ws://<workstation-lan-ip>:8909
 API key:        <key-created-in-relay-admin>
 ```
 
-For the current production Relay:
+For a deployed Relay:
 
 ```text
-Relay endpoint: wss://codex-bridge.three.ink
+Relay endpoint: wss://<your-relay-domain>
 API key:        <your-user-api-key>
 ```
 
@@ -274,21 +274,24 @@ sdk.dir=/home/three/Android/Sdk
    resolve approvals from the phone.
 7. Check the chat header for desktop connection state.
 
-## Production Relay Deployment
+## Relay Deployment
 
-The included deployment helper targets the configured SSH alias `prod`:
+The included deployment helper is generic. Provide your own SSH target and
+public health check URL through environment variables:
 
 ```bash
-npm run deploy:relay:prod
+CODEP_RELAY_DEPLOY_TARGET=<ssh-host-or-alias> \
+CODEP_RELAY_DEPLOY_PUBLIC_HEALTH_URL=https://<your-relay-domain>/healthz \
+npm run deploy:relay
 ```
 
 The script runs Relay tests, builds a Linux amd64 static binary, uploads it to the
 server, swaps the systemd binary, restarts `codep-relay`, and verifies local and
 public health checks.
 
-Current production details are documented in
-`services/relay/README.md`. Do not commit production secrets from the server
-environment file.
+Deployment paths, service names, and health URLs can be overridden. See
+`services/relay/README.md` for the full list of variables. Do not commit
+production secrets from the server environment file.
 
 ## Useful Commands
 
@@ -300,7 +303,7 @@ npm run dev:relay
 npm run dev:desktop
 npm run dev:mobile
 npm run install:mobile:android
-npm run deploy:relay:prod
+npm run deploy:relay
 ```
 
 ## Status

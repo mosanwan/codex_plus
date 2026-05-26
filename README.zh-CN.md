@@ -49,7 +49,7 @@ Relay 和移动端在线状态。
 ├── services/
 │   └── relay/                # Go WebSocket Relay、管理后台、SQLite 事件库
 ├── scripts/
-│   ├── deploy-relay-prod.mjs # 生产 Relay 部署脚本
+│   ├── deploy-relay.mjs      # Relay 部署脚本
 │   └── install-mobile-android.mjs
 ├── ref/images/               # README 使用的截图
 └── codex-desktop-mobile-plan.md
@@ -185,10 +185,10 @@ Relay endpoint: ws://<工作站局域网 IP>:8909
 API key:        <Relay 管理后台创建的 key>
 ```
 
-当前生产 Relay：
+已部署的 Relay：
 
 ```text
-Relay endpoint: wss://codex-bridge.three.ink
+Relay endpoint: wss://<你的 Relay 域名>
 API key:        <你的用户 API key>
 ```
 
@@ -250,18 +250,21 @@ sdk.dir=/home/three/Android/Sdk
 6. 在手机上发送消息、使用文件或技能提及、中断运行中的任务、处理审批。
 7. 通过聊天 Header 查看桌面端是否在线。
 
-## 生产 Relay 部署
+## Relay 部署
 
-仓库内置部署脚本，目标是已配置好的 SSH alias `prod`：
+仓库内置的是通用部署脚本。通过环境变量传入你自己的 SSH 目标和公网健康检查地址：
 
 ```bash
-npm run deploy:relay:prod
+CODEP_RELAY_DEPLOY_TARGET=<ssh-host-or-alias> \
+CODEP_RELAY_DEPLOY_PUBLIC_HEALTH_URL=https://<你的 Relay 域名>/healthz \
+npm run deploy:relay
 ```
 
 脚本会运行 Relay 测试，构建 Linux amd64 静态二进制文件，上传到服务器，替换 systemd
 服务使用的二进制文件，重启 `codep-relay`，并验证本地和公网健康检查。
 
-当前生产环境细节记录在 `services/relay/README.md`。不要提交服务器环境文件里的生产密钥。
+部署路径、服务名和健康检查地址都可以通过环境变量覆盖。完整变量列表见
+`services/relay/README.md`。不要提交服务器环境文件里的生产密钥。
 
 ## 常用命令
 
@@ -273,7 +276,7 @@ npm run dev:relay
 npm run dev:desktop
 npm run dev:mobile
 npm run install:mobile:android
-npm run deploy:relay:prod
+npm run deploy:relay
 ```
 
 ## 当前状态

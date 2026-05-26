@@ -60,47 +60,92 @@ For LAN testing, use the workstation IP from the phone browser, for example:
 http://192.168.1.20:8909/healthz
 ```
 
-## Production Deployment
+## Server Deployment
 
-Current production target:
+Run the Relay on a Linux server behind a TLS-terminating reverse proxy such as
+nginx, Caddy, or a managed load balancer.
 
-- SSH alias: `prod`
-- Public endpoint: `https://codex-bridge.three.ink`
+Recommended server layout:
+
 - App binary: `/opt/codep-relay/codep-relay`
 - Service unit: `/etc/systemd/system/codep-relay.service`
 - Environment file: `/etc/codep-relay/relay.env`
-- Persistent data: `/var/lib/codep-relay/relay.db`
-- Local listen address on server: `127.0.0.1:8909`
-- nginx proxies `https://codex-bridge.three.ink/` to `http://127.0.0.1:8909`
+- Persistent database: `/var/lib/codep-relay/relay.db`
+- Local listen address: `127.0.0.1:8909`
+- Public endpoint: `https://<your-relay-domain>` proxied to
+  `http://127.0.0.1:8909`
 
-Deploy the current relay code:
+Example environment file:
 
 ```bash
-npm run deploy:relay:prod
+CODEP_RELAY_ADDR=127.0.0.1:8909
+CODEP_RELAY_DB=/var/lib/codep-relay/relay.db
+CODEP_RELAY_ADMIN_USERNAME=admin
+CODEP_RELAY_ADMIN_PASSWORD=<strong-admin-password>
+CODEP_RELAY_SESSION_SECRET=<long-random-session-secret>
+```
+
+Example systemd service:
+
+```ini
+[Unit]
+Description=Codex+ Relay
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/codep-relay/relay.env
+ExecStart=/opt/codep-relay/codep-relay
+Restart=always
+RestartSec=2
+User=codep-relay
+Group=codep-relay
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Deploy the current Relay code with the generic deployment helper:
+
+```bash
+CODEP_RELAY_DEPLOY_TARGET=<ssh-host-or-alias> \
+CODEP_RELAY_DEPLOY_PUBLIC_HEALTH_URL=https://<your-relay-domain>/healthz \
+npm run deploy:relay
 ```
 
 The deploy script:
 
 1. Runs `go test ./...` in `services/relay`.
 2. Builds a Linux amd64 static binary with `CGO_ENABLED=0`.
-3. Uploads it to `prod:/tmp/codep-relay.new`.
-4. Installs it to `/opt/codep-relay/codep-relay`.
+3. Uploads it to the target server.
+4. Installs it to the configured binary path.
 5. Backs up the previous binary with a timestamp suffix.
-6. Restarts `codep-relay` via systemd.
-7. Verifies both local and public health checks.
+6. Restarts the configured systemd service.
+7. Verifies the local health check and, when configured, the public health check.
+
+Deployment variables:
+
+```bash
+CODEP_RELAY_DEPLOY_TARGET=<ssh-host-or-alias>
+CODEP_RELAY_DEPLOY_SERVICE=codep-relay
+CODEP_RELAY_DEPLOY_REMOTE_BINARY=/opt/codep-relay/codep-relay
+CODEP_RELAY_DEPLOY_REMOTE_TEMP=/tmp/codep-relay.new
+CODEP_RELAY_DEPLOY_LOCAL_BINARY=/tmp/codep-relay
+CODEP_RELAY_DEPLOY_LOCAL_HEALTH_URL=http://127.0.0.1:8909/healthz
+CODEP_RELAY_DEPLOY_PUBLIC_HEALTH_URL=https://<your-relay-domain>/healthz
+```
 
 Manual verification:
 
 ```bash
-ssh prod 'systemctl status codep-relay --no-pager -l'
-ssh prod 'journalctl -u codep-relay --since "10 minutes ago" --no-pager'
-curl https://codex-bridge.three.ink/healthz
+ssh <ssh-host-or-alias> 'systemctl status codep-relay --no-pager -l'
+ssh <ssh-host-or-alias> 'journalctl -u codep-relay --since "10 minutes ago" --no-pager'
+curl https://<your-relay-domain>/healthz
 ```
 
-Do not commit values from `/etc/codep-relay/relay.env`; it contains production
-admin and session secrets. Desktop and mobile clients should use the same API
-key and this relay endpoint:
+Do not commit production values from the server environment file. It contains
+admin credentials and session secrets. Desktop and mobile clients should use the
+same API key and your public Relay endpoint:
 
 ```text
-wss://codex-bridge.three.ink
+wss://<your-relay-domain>
 ```

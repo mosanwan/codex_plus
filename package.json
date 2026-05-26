@@ -11,7 +11,7 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "package:desktop:deb": "node scripts/package-desktop-deb.mjs",
-    "deploy:relay:prod": "node scripts/deploy-relay-prod.mjs",
+    "deploy:relay": "node scripts/deploy-relay.mjs",
     "install:mobile:android": "node scripts/install-mobile-android.mjs",
     "dev:mobile": "npm run dev -w @codep/mobile -- --port 5175",
     "dev:mobile:lan": "npm run dev:mobile",
