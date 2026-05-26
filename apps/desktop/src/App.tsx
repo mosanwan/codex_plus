@@ -4906,7 +4906,7 @@ function codexPermissionOptions(value: PermissionMode): {
       approvalsReviewer: "user",
       permissionProfile: "full-access",
       sandbox: "danger-full-access",
-      sandboxPolicy: { type: "danger-full-access" }
+      sandboxPolicy: { type: "dangerFullAccess" }
     };
   }
 
