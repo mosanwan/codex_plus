@@ -24,11 +24,22 @@ const __dirname = path.dirname(__filename);
 
 if (process.platform === "linux") {
   app.setName("Codex+");
+  const ozonePlatform = process.env.CODEX_PLUS_OZONE_PLATFORM ?? "x11";
+  app.commandLine.appendSwitch("ozone-platform", ozonePlatform);
   app.commandLine.appendSwitch(
-    "ozone-platform-hint",
-    process.env.CODEX_PLUS_OZONE_PLATFORM ?? "auto"
+    "enable-features",
+    process.env.CODEX_PLUS_ENABLE_FEATURES ?? "WaylandWindowDecorations"
   );
-  app.commandLine.appendSwitch("enable-features", "WaylandWindowDecorations");
+  if (ozonePlatform !== "x11" && !process.env.CODEX_PLUS_DISABLE_WAYLAND_IME) {
+    app.commandLine.appendSwitch("enable-wayland-ime");
+    app.commandLine.appendSwitch(
+      "wayland-text-input-version",
+      process.env.CODEX_PLUS_WAYLAND_TEXT_INPUT_VERSION ?? "3"
+    );
+  }
+  if (process.env.CODEX_PLUS_GTK_VERSION) {
+    app.commandLine.appendSwitch("gtk-version", process.env.CODEX_PLUS_GTK_VERSION);
+  }
 }
 
 let mainWindow: BrowserWindow | null = null;

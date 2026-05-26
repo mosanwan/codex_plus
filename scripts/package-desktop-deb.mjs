@@ -62,12 +62,16 @@ await installText(
   `#!/bin/sh
 set -eu
 
-EXTRA_ARGS=""
-if [ "\${XDG_SESSION_TYPE:-}" = "wayland" ] && [ -z "\${CODEX_PLUS_DISABLE_WAYLAND:-}" ]; then
-  EXTRA_ARGS="--ozone-platform-hint=auto --enable-features=WaylandWindowDecorations"
+OZONE_PLATFORM="\${CODEX_PLUS_OZONE_PLATFORM:-x11}"
+CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM"
+if [ "$OZONE_PLATFORM" != "x11" ] && [ -z "\${CODEX_PLUS_DISABLE_WAYLAND_IME:-}" ]; then
+  CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM --enable-wayland-ime --wayland-text-input-version=\${CODEX_PLUS_WAYLAND_TEXT_INPUT_VERSION:-3} --enable-features=\${CODEX_PLUS_ENABLE_FEATURES:-WaylandWindowDecorations}"
+  if [ -n "\${CODEX_PLUS_GTK_VERSION:-}" ]; then
+    CHROMIUM_ARGS="$CHROMIUM_ARGS --gtk-version=\${CODEX_PLUS_GTK_VERSION}"
+  fi
 fi
 
-exec /opt/${appDirName}/electron /opt/${appDirName}/resources/app $EXTRA_ARGS "$@"
+exec /opt/${appDirName}/electron $CHROMIUM_ARGS /opt/${appDirName}/resources/app "$@"
 `,
   0o755
 );
