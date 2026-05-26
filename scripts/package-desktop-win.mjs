@@ -24,7 +24,6 @@ const stagingDir = path.join(releaseDir, `windows-${targetArch}`);
 const appDir = path.join(stagingDir, productName);
 const appResourcesDir = path.join(appDir, "resources", "app");
 const zipPath = path.join(releaseDir, `${packageName}_${version}_windows_${targetArch}.zip`);
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 if (targetArch !== process.arch) {
   throw new Error(
@@ -32,8 +31,8 @@ if (targetArch !== process.arch) {
   );
 }
 
-run(npmCommand, ["--workspace", "@codep/codex-adapter", "run", "build"]);
-run(npmCommand, ["--workspace", "@codep/desktop", "run", "build"]);
+runNpm(["--workspace", "@codep/codex-adapter", "run", "build"]);
+runNpm(["--workspace", "@codep/desktop", "run", "build"]);
 
 const electronDist = path.join(repoRoot, "node_modules", "electron", "dist");
 const electronExecutable = path.join(electronDist, "electron.exe");
@@ -95,6 +94,16 @@ function run(command, args) {
     cwd: repoRoot,
     stdio: "inherit"
   });
+}
+
+function runNpm(args) {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath) {
+    run(process.execPath, [npmExecPath, ...args]);
+    return;
+  }
+
+  run("npm", args);
 }
 
 async function writeJson(filePath, value) {
