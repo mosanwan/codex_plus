@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -76,10 +77,7 @@ export class CodexAppServerProcess {
       {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          PATH: runtimePath()
-        }
+        env: runtimeEnv()
       }
     );
 
@@ -108,6 +106,29 @@ export class CodexAppServerProcess {
   }
 }
 
+const PROXY_ENV_KEYS = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy"
+] as const;
+
+function runtimeEnv(): NodeJS.ProcessEnv {
+  const baseEnv = {
+    ...process.env,
+    PATH: runtimePath()
+  };
+
+  return {
+    ...baseEnv,
+    ...shellProxyEnv(baseEnv)
+  };
+}
+
 function runtimePath(): string {
   const entries = [
     process.env.PATH,
@@ -130,6 +151,53 @@ function nvmNodeBins(): string[] {
     .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
     .map(version => path.join(versionsDir, version, "bin"))
     .filter(entry => existsSync(entry));
+}
+
+function shellProxyEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (PROXY_ENV_KEYS.some(key => baseEnv[key])) {
+    return {};
+  }
+
+  const shell = process.env.SHELL || "/bin/bash";
+  if (!existsSync(shell)) {
+    return {};
+  }
+
+  try {
+    const output = execFileSync(shell, ["-ic", "env"], {
+      env: baseEnv,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1_500
+    });
+    return parseProxyEnv(output);
+  } catch {
+    return {};
+  }
+}
+
+function parseProxyEnv(output: string): NodeJS.ProcessEnv {
+  const proxyEnv: NodeJS.ProcessEnv = {};
+
+  for (const line of output.split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      continue;
+    }
+
+    const key = line.slice(0, separator);
+    if (!isProxyEnvKey(key)) {
+      continue;
+    }
+
+    proxyEnv[key] = line.slice(separator + 1);
+  }
+
+  return proxyEnv;
+}
+
+function isProxyEnvKey(value: string): value is (typeof PROXY_ENV_KEYS)[number] {
+  return PROXY_ENV_KEYS.includes(value as (typeof PROXY_ENV_KEYS)[number]);
 }
 
 function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void {
