@@ -71,17 +71,29 @@ export class CodexAppServerProcess {
   }
 
   private async start(): Promise<void> {
+    const env = runtimeEnv();
     const child = spawn(
       this.options.codexCommand,
       ["app-server", "--listen", this.url],
       {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: runtimeEnv()
+        env
       }
     );
 
     this.child = child;
+
+    const spawnError = new Promise<never>((_resolve, reject) => {
+      child.once("error", error => {
+        reject(
+          new Error(
+            `Failed to start codex app-server with command "${this.options.codexCommand}". ` +
+              `${error.message}\nPATH=${env.PATH ?? ""}`
+          )
+        );
+      });
+    });
 
     child.stdout.on("data", chunk => {
       this.appendLogs(chunk);
@@ -90,12 +102,15 @@ export class CodexAppServerProcess {
       this.appendLogs(chunk);
     });
 
-    await waitForReady({
-      readyUrl: `http://127.0.0.1:${this.port}/readyz`,
-      timeoutMs: this.options.startupTimeoutMs,
-      isExited: () => child.exitCode !== null || child.signalCode !== null,
-      getLogs: () => this.getRecentLogs()
-    });
+    await Promise.race([
+      waitForReady({
+        readyUrl: `http://127.0.0.1:${this.port}/readyz`,
+        timeoutMs: this.options.startupTimeoutMs,
+        isExited: () => child.exitCode !== null || child.signalCode !== null,
+        getLogs: () => this.getRecentLogs()
+      }),
+      spawnError
+    ]);
   }
 
   private appendLogs(chunk: Buffer): void {
@@ -120,21 +135,31 @@ const PROXY_ENV_KEYS = [
 function runtimeEnv(): NodeJS.ProcessEnv {
   const baseEnv = {
     ...process.env,
-    PATH: runtimePath()
+    PATH: runtimePath(process.env.PATH)
   };
+  const shellEnv = shellRuntimeEnv(baseEnv);
 
   return {
     ...baseEnv,
-    ...shellProxyEnv(baseEnv)
+    ...shellEnv,
+    PATH: runtimePath(shellEnv.PATH, baseEnv.PATH)
   };
 }
 
-function runtimePath(): string {
+function runtimePath(...basePaths: Array<string | undefined>): string {
   const entries = [
-    process.env.PATH,
+    ...basePaths,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
     path.join(homedir(), ".local", "bin"),
     path.join(homedir(), ".npm-global", "bin"),
     path.join(homedir(), ".yarn", "bin"),
+    path.join(homedir(), ".bun", "bin"),
     ...nvmNodeBins()
   ].filter((entry): entry is string => Boolean(entry));
 
@@ -153,11 +178,7 @@ function nvmNodeBins(): string[] {
     .filter(entry => existsSync(entry));
 }
 
-function shellProxyEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (PROXY_ENV_KEYS.some(key => baseEnv[key])) {
-    return {};
-  }
-
+function shellRuntimeEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const shell = process.env.SHELL || "/bin/bash";
   if (!existsSync(shell)) {
     return {};
@@ -170,14 +191,14 @@ function shellProxyEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1_500
     });
-    return parseProxyEnv(output);
+    return parseShellEnv(output, baseEnv);
   } catch {
     return {};
   }
 }
 
-function parseProxyEnv(output: string): NodeJS.ProcessEnv {
-  const proxyEnv: NodeJS.ProcessEnv = {};
+function parseShellEnv(output: string, baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const shellEnv: NodeJS.ProcessEnv = {};
 
   for (const line of output.split("\n")) {
     const separator = line.indexOf("=");
@@ -186,14 +207,19 @@ function parseProxyEnv(output: string): NodeJS.ProcessEnv {
     }
 
     const key = line.slice(0, separator);
-    if (!isProxyEnvKey(key)) {
+    if (key === "PATH") {
+      shellEnv.PATH = line.slice(separator + 1);
       continue;
     }
 
-    proxyEnv[key] = line.slice(separator + 1);
+    if (!isProxyEnvKey(key) || baseEnv[key]) {
+      continue;
+    }
+
+    shellEnv[key] = line.slice(separator + 1);
   }
 
-  return proxyEnv;
+  return shellEnv;
 }
 
 function isProxyEnvKey(value: string): value is (typeof PROXY_ENV_KEYS)[number] {
