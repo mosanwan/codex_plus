@@ -1,0 +1,43 @@
+name: Build macOS Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS package
+        run: npm run package:desktop:mac -- --${{ matrix.arch }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-plus-macos-${{ matrix.arch }}
+          path: |
+            release/*_macos_${{ matrix.arch }}.dmg
+            release/*_macos_${{ matrix.arch }}.app.zip
+          if-no-files-found: error

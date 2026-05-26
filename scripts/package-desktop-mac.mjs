@@ -1,0 +1,150 @@
+import { execFileSync } from "node:child_process";
+import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+if (process.platform !== "darwin") {
+  throw new Error("macOS packaging must run on macOS.");
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(__filename), "..");
+const rootPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+const desktopPackage = JSON.parse(
+  await readFile(path.join(repoRoot, "apps/desktop/package.json"), "utf8")
+);
+
+const version = desktopPackage.version ?? rootPackage.version ?? "0.1.0";
+const targetArch = parseTargetArch();
+const packageName = "codex-plus";
+const productName = "Codex+";
+const bundleId = "app.codep.desktop";
+const releaseDir = path.join(repoRoot, "release");
+const stagingDir = path.join(releaseDir, `macos-${targetArch}`);
+const appPath = path.join(stagingDir, `${productName}.app`);
+const appResourcesDir = path.join(appPath, "Contents", "Resources", "app");
+const zipPath = path.join(releaseDir, `${packageName}_${version}_macos_${targetArch}.app.zip`);
+const dmgRoot = path.join(stagingDir, "dmg");
+const dmgPath = path.join(releaseDir, `${packageName}_${version}_macos_${targetArch}.dmg`);
+
+if (targetArch !== process.arch) {
+  throw new Error(
+    `Target arch ${targetArch} must match the macOS runner arch ${process.arch}. ` +
+      "Build x64 on macos-*-intel and arm64 on an Apple Silicon runner."
+  );
+}
+
+run("npm", ["--workspace", "@codep/codex-adapter", "run", "build"]);
+run("npm", ["--workspace", "@codep/desktop", "run", "build"]);
+
+const electronApp = path.join(repoRoot, "node_modules/electron/dist/Electron.app");
+if (!existsSync(electronApp)) {
+  throw new Error(`Electron.app was not found at ${electronApp}. Run npm ci on macOS first.`);
+}
+
+await rm(stagingDir, { recursive: true, force: true });
+await rm(zipPath, { force: true });
+await rm(dmgPath, { force: true });
+await cp(electronApp, appPath, { recursive: true, preserveTimestamps: true });
+
+const defaultAppAsar = path.join(appPath, "Contents", "Resources", "default_app.asar");
+await rm(defaultAppAsar, { force: true });
+await mkdir(appResourcesDir, { recursive: true });
+
+const electronExecutable = path.join(appPath, "Contents", "MacOS", "Electron");
+const productExecutable = path.join(appPath, "Contents", "MacOS", productName);
+if (existsSync(electronExecutable)) {
+  await rename(electronExecutable, productExecutable);
+}
+
+await cp(path.join(repoRoot, "apps/desktop/dist"), path.join(appResourcesDir, "dist"), {
+  recursive: true
+});
+await cp(
+  path.join(repoRoot, "apps/desktop/dist-electron"),
+  path.join(appResourcesDir, "dist-electron"),
+  { recursive: true }
+);
+
+await writeJson(path.join(appResourcesDir, "package.json"), {
+  name: packageName,
+  productName,
+  version,
+  type: "module",
+  main: "dist-electron/main.js"
+});
+
+const adapterDest = path.join(appResourcesDir, "node_modules", "@codep", "codex-adapter");
+await mkdir(adapterDest, { recursive: true });
+await cp(path.join(repoRoot, "packages/codex-adapter/dist"), path.join(adapterDest, "dist"), {
+  recursive: true
+});
+await cp(path.join(repoRoot, "packages/codex-adapter/package.json"), path.join(adapterDest, "package.json"));
+
+const plistPath = path.join(appPath, "Contents", "Info.plist");
+setPlistValue(plistPath, "CFBundleExecutable", "string", productName);
+setPlistValue(plistPath, "CFBundleName", "string", productName);
+setPlistValue(plistPath, "CFBundleDisplayName", "string", productName);
+setPlistValue(plistPath, "CFBundleIdentifier", "string", bundleId);
+setPlistValue(plistPath, "CFBundleShortVersionString", "string", version);
+setPlistValue(plistPath, "CFBundleVersion", "string", version);
+setPlistValue(plistPath, "LSApplicationCategoryType", "string", "public.app-category.developer-tools");
+
+run("codesign", ["--force", "--deep", "--sign", "-", appPath]);
+run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, zipPath]);
+
+await mkdir(dmgRoot, { recursive: true });
+await cp(appPath, path.join(dmgRoot, `${productName}.app`), {
+  recursive: true,
+  preserveTimestamps: true
+});
+await symlink("/Applications", path.join(dmgRoot, "Applications"));
+run("hdiutil", [
+  "create",
+  "-volname",
+  productName,
+  "-srcfolder",
+  dmgRoot,
+  "-ov",
+  "-format",
+  "UDZO",
+  dmgPath
+]);
+
+console.log(`Built ${path.relative(repoRoot, zipPath)}`);
+console.log(`Built ${path.relative(repoRoot, dmgPath)}`);
+
+function run(command, args) {
+  execFileSync(command, args, {
+    cwd: repoRoot,
+    stdio: "inherit"
+  });
+}
+
+async function writeJson(filePath, value) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function setPlistValue(plistPath, key, type, value) {
+  const command = "/usr/libexec/PlistBuddy";
+  const setArgs = ["-c", `Set :${key} ${value}`, plistPath];
+  const addArgs = ["-c", `Add :${key} ${type} ${value}`, plistPath];
+
+  try {
+    execFileSync(command, setArgs, { stdio: "ignore" });
+  } catch {
+    execFileSync(command, addArgs, { stdio: "inherit" });
+  }
+}
+
+function parseTargetArch() {
+  if (process.argv.includes("--x64")) {
+    return "x64";
+  }
+  if (process.argv.includes("--arm64")) {
+    return "arm64";
+  }
+  return process.arch;
+}
