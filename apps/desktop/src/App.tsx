@@ -4897,12 +4897,16 @@ function codexPermissionOptions(value: PermissionMode): {
   approvalPolicy: string;
   approvalsReviewer: string;
   permissionProfile: string;
+  sandbox?: string;
+  sandboxPolicy?: { type: string };
 } {
   if (value === "full-access") {
     return {
       approvalPolicy: "never",
       approvalsReviewer: "user",
-      permissionProfile: "full-access"
+      permissionProfile: "full-access",
+      sandbox: "danger-full-access",
+      sandboxPolicy: { type: "danger-full-access" }
     };
   }
 

@@ -15,6 +15,7 @@ import {
   CodexAdapter,
   type CodexAdapterEvent,
   type InitializeResponse,
+  type JsonObject,
   type ReasoningEffort,
   type UserInput
 } from "@codep/codex-adapter";
@@ -233,6 +234,7 @@ function registerIpcHandlers(): void {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandbox?: string;
       }
     ) => {
       if (!adapter) {
@@ -245,7 +247,8 @@ function registerIpcHandlers(): void {
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile
+        permissionProfile: options.permissionProfile,
+        sandbox: options.sandbox
       });
     }
   );
@@ -306,6 +309,7 @@ function registerIpcHandlers(): void {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandbox?: string;
       }
     ) => {
       if (!adapter) {
@@ -319,6 +323,7 @@ function registerIpcHandlers(): void {
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
         permissionProfile: options.permissionProfile,
+        sandbox: options.sandbox,
         excludeTurns: false
       });
     }
@@ -338,6 +343,7 @@ function registerIpcHandlers(): void {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandboxPolicy?: JsonObject;
       }
     ) => {
       if (!adapter) {
@@ -350,7 +356,8 @@ function registerIpcHandlers(): void {
           effort: options.effort,
           approvalPolicy: options.approvalPolicy,
           approvalsReviewer: options.approvalsReviewer,
-          permissionProfile: options.permissionProfile
+          permissionProfile: options.permissionProfile,
+          sandboxPolicy: options.sandboxPolicy
         });
       }
       return adapter.startTurn(options.threadId, options.text, {
@@ -359,7 +366,8 @@ function registerIpcHandlers(): void {
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile
+        permissionProfile: options.permissionProfile,
+        sandboxPolicy: options.sandboxPolicy
       });
     }
   );

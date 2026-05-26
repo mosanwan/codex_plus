@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { CodexAdapterEvent, UserInput } from "@codep/codex-adapter";
+import type { CodexAdapterEvent, JsonObject, UserInput } from "@codep/codex-adapter";
 
 interface RemoteAttachmentInput {
   kind: "image";
@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     approvalPolicy?: string;
     approvalsReviewer?: string;
     permissionProfile?: string;
+    sandbox?: string;
   }) =>
     ipcRenderer.invoke("codex:thread:start", options),
   listThreads: (options: { cwd: string }) =>
@@ -47,6 +48,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     approvalPolicy?: string;
     approvalsReviewer?: string;
     permissionProfile?: string;
+    sandbox?: string;
   }) =>
     ipcRenderer.invoke("codex:thread:resume", options),
   startTurn: (options: {
@@ -59,6 +61,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     approvalPolicy?: string;
     approvalsReviewer?: string;
     permissionProfile?: string;
+    sandboxPolicy?: JsonObject;
   }) =>
     ipcRenderer.invoke("codex:turn:start", options),
   interruptTurn: (options: { threadId: string; turnId: string }) =>

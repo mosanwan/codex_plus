@@ -4,6 +4,7 @@ import type {
   ThreadListResponse,
   ThreadStartResponse,
   TurnStartResponse,
+  JsonObject,
   UserInput
 } from "@codep/codex-adapter";
 
@@ -83,6 +84,7 @@ declare global {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandbox?: string;
       }): Promise<ThreadStartResponse>;
       listThreads(options: { cwd: string }): Promise<ThreadListResponse>;
       listModels(options?: {
@@ -103,6 +105,7 @@ declare global {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandbox?: string;
       }): Promise<ThreadStartResponse>;
       startTurn(options: {
         threadId: string;
@@ -114,6 +117,7 @@ declare global {
         approvalPolicy?: string;
         approvalsReviewer?: string;
         permissionProfile?: string;
+        sandboxPolicy?: JsonObject;
       }): Promise<TurnStartResponse>;
       interruptTurn(options: {
         threadId: string;
