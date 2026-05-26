@@ -10,6 +10,8 @@ release/
 !.env.example
 .codep-relay.json
 .codep-relay.json.tmp
+.codep-relay.db
+.codep-relay.db-*
 .agents/
 .agent-browser/
 .codex/

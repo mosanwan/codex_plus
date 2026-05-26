@@ -18,6 +18,8 @@ import {
   Star,
   Sun,
   Trash2,
+  Wifi,
+  WifiOff,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -31,6 +33,8 @@ import type {
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
+import defaultNotificationSoundUrl from "../zelda-chest.wav?url";
+import desktopPackage from "../package.json";
 
 interface SessionView {
   threadId: string;
@@ -83,12 +87,18 @@ interface ClipboardAttachmentResult {
   formats: string[];
 }
 
-interface RemoteAttachmentInput {
-  kind: "image";
-  name: string;
-  mimeType: string;
-  dataUrl: string;
-}
+type RemoteAttachmentInput =
+  | {
+      kind: "image";
+      name: string;
+      mimeType: string;
+      dataUrl: string;
+    }
+  | {
+      kind: "mention";
+      name: string;
+      path: string;
+    };
 
 interface ComposerSuggestion {
   id: string;
@@ -107,7 +117,13 @@ interface NotificationSoundFile {
 }
 
 type ConnectionState = "disconnected" | "connecting" | "connected";
-type RelayConnectionState = "disabled" | "connecting" | "connected" | "error";
+type RelayConnectionState =
+  | "disabled"
+  | "connecting"
+  | "connected"
+  | "retrying"
+  | "auth_error"
+  | "error";
 type PermissionMode = "default" | "auto-review" | "full-access";
 type ThemeMode = "dark" | "light";
 type ModelEffort = "low" | "medium" | "high" | "xhigh";
@@ -148,9 +164,17 @@ interface RelayEnvelope {
   payload?: unknown;
 }
 
+interface RelayPresence {
+  desktopCount: number;
+  clientCount: number;
+  connected: boolean;
+  lastSeen?: string;
+}
+
 interface RemoteCommandEnvelope {
   type: string;
   payload?: {
+    client_message_id?: string;
     workspace?: string;
     sessionId?: string;
     title?: string;
@@ -162,6 +186,9 @@ interface RemoteCommandEnvelope {
     iconId?: string;
     requestId?: string | number;
     decision?: "accept" | "decline" | "cancel";
+    mode?: "file" | "skill";
+    query?: string;
+    limit?: number;
   };
 }
 
@@ -205,9 +232,23 @@ const MODEL_EFFORT_STORAGE_KEY = "codep.modelEffort";
 const UNREAD_SESSIONS_STORAGE_KEY = "codep.unreadSessions";
 const SOUND_NOTIFICATIONS_STORAGE_KEY = "codep.soundNotifications";
 const NOTIFICATION_SOUND_FILE_STORAGE_KEY = "codep.notificationSoundFile";
+const NOTIFICATION_SOUND_VOLUME_STORAGE_KEY = "codep.notificationSoundVolume";
+const DEFAULT_NOTIFICATION_SOUND_FILE: NotificationSoundFile = {
+  path: "bundled://zelda-chest.wav",
+  url: defaultNotificationSoundUrl,
+  name: "zelda-chest.wav"
+};
+const DEFAULT_NOTIFICATION_SOUND_VOLUME = 70;
+const APP_VERSION_LABEL = `v${desktopPackage.version}`;
 const INITIAL_VISIBLE_TRANSCRIPT_COUNT = 40;
 const TRANSCRIPT_PAGE_SIZE = 40;
-type SidebarTab = "all" | "favorites";
+const RELIABLE_RELAY_RETRY_MS = 5000;
+const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 750;
+const RELAY_RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 30000] as const;
+const RELAY_RECONNECT_JITTER_MS = 500;
+const RELAY_STABLE_CONNECTION_MS = 30000;
+const CLIENT_COMMAND_IDS_STORAGE_KEY = "codep.processedClientCommandIds";
+type SidebarTab = "all" | "recent" | "favorites";
 const LANGUAGE_OPTIONS: Array<{ value: UILanguage; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
   { value: "en", label: "English" }
@@ -220,14 +261,17 @@ const UI_TEXT = {
     favoriteSessions: "Favorite sessions",
     openSession: "Open",
     sessions: "Sessions",
+    workspaces: "Workspaces",
     latest: "Latest",
     new: "New",
     addWorkspace: "Add workspace",
     sessionViews: "Session views",
     all: "All",
+    recent: "Recent",
     favorites: "Favorites",
     loadingSessions: "Loading sessions...",
     noSessionsLoaded: "No sessions loaded",
+    recentEmpty: "Recent sessions appear here after workspace history loads.",
     favoriteEmpty: "Star sessions you want to keep close. Favorites appear here.",
     workspaceEmpty: "Add one or more workspaces, then open a session under any of them.",
     conversation: "Conversation",
@@ -287,6 +331,7 @@ const UI_TEXT = {
     notificationsIntro: "Show session unread dots when a turn completes away from the active view. Sound can also play on every completed turn.",
     soundOnTurnCompletion: "Sound on turn completion",
     soundOnTurnCompletionHelp: "Play a short sound when Codex finishes a turn.",
+    soundVolume: "Volume",
     audioFile: "Audio file",
     defaultTone: "Default tone",
     chooseFile: "Choose file",
@@ -302,7 +347,14 @@ const UI_TEXT = {
     status: "Status",
     relayConnected: "Relay is connected and ready for mobile clients.",
     relayConnecting: "Relay credentials are configured. Connecting...",
+    relayRetrying: "Relay is disconnected. Reconnecting in {seconds}s...",
+    relayAuthError: "Relay rejected the API key. Check the desktop and mobile credentials.",
+    relayConnectionError: "Relay connection failed. Waiting to reconnect...",
     relayMissing: "Create an API key on the relay server, then paste it here and in the mobile app.",
+    mobileClientsOnline: "{count} mobile client(s) online.",
+    noMobileClientsOnline: "No mobile clients online.",
+    mobileClients: "Mobile clients",
+    mobileClientsShort: "mobile",
     notSet: "Not set",
     deviceId: "Device ID",
     desktopUrl: "Desktop URL",
@@ -365,14 +417,17 @@ const UI_TEXT = {
     favoriteSessions: "收藏 Session",
     openSession: "打开",
     sessions: "Sessions",
+    workspaces: "工作区",
     latest: "最新",
     new: "新建",
     addWorkspace: "添加工作区",
     sessionViews: "Session 视图",
     all: "全部",
+    recent: "最近",
     favorites: "收藏",
     loadingSessions: "正在加载 Session...",
     noSessionsLoaded: "还没有加载 Session",
+    recentEmpty: "加载工作区历史后，最近使用的 Session 会显示在这里。",
     favoriteEmpty: "收藏常用 Session 后，会显示在这里。",
     workspaceEmpty: "先添加一个或多个工作区，然后打开或创建 Session。",
     conversation: "对话",
@@ -432,6 +487,7 @@ const UI_TEXT = {
     notificationsIntro: "当 Turn 在非当前视图完成时显示 Session 未读红点，也可以播放提示音。",
     soundOnTurnCompletion: "Turn 结束提示音",
     soundOnTurnCompletionHelp: "Codex 完成一个 Turn 后播放短提示音。",
+    soundVolume: "音量",
     audioFile: "音频文件",
     defaultTone: "默认提示音",
     chooseFile: "选择文件",
@@ -447,7 +503,14 @@ const UI_TEXT = {
     status: "状态",
     relayConnected: "中转服务已连接，可以供移动端使用。",
     relayConnecting: "中转凭据已配置，正在连接...",
+    relayRetrying: "中转服务已断开，将在 {seconds} 秒后重连...",
+    relayAuthError: "中转服务拒绝了 API key，请检查桌面端和移动端凭据。",
+    relayConnectionError: "中转服务连接失败，正在等待重连...",
     relayMissing: "先在中转服务创建 API key，然后粘贴到桌面端和移动端。",
+    mobileClientsOnline: "{count} 台移动端在线。",
+    noMobileClientsOnline: "暂无移动端在线。",
+    mobileClients: "移动端",
+    mobileClientsShort: "移动端",
     notSet: "未设置",
     deviceId: "设备 ID",
     desktopUrl: "桌面端 URL",
@@ -598,6 +661,7 @@ const SESSION_ICON_IDS = [
   "brush",
   "grid"
 ] as const;
+const NOTIFICATION_BODY_MAX_CHARS = 100;
 type SessionIconId = (typeof SESSION_ICON_IDS)[number];
 const DEMO_MODE =
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
@@ -672,9 +736,7 @@ export function App() {
   >(
     DEMO_MODE ? { [DEMO_WORKSPACE]: [DEMO_SESSION] } : {}
   );
-  const [sidebarTab, setSidebarTab] = useState<SidebarTab>(() =>
-    readStringList(FAVORITE_SESSIONS_STORAGE_KEY).length > 0 ? "favorites" : "all"
-  );
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("recent");
   const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
     () => new Set(readStringList(FAVORITE_SESSIONS_STORAGE_KEY))
   );
@@ -715,6 +777,7 @@ export function App() {
   const [relayApiKey, setRelayApiKey] = useState(
     () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
   );
+  const [relayRetryDelayMs, setRelayRetryDelayMs] = useState<number | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() =>
     readSavedPermissionMode()
   );
@@ -727,6 +790,9 @@ export function App() {
   const [soundNotificationsEnabled, setSoundNotificationsEnabled] = useState(
     () => window.localStorage.getItem(SOUND_NOTIFICATIONS_STORAGE_KEY) === "true"
   );
+  const [notificationSoundVolume, setNotificationSoundVolume] = useState(() =>
+    readSavedNotificationSoundVolume()
+  );
   const [notificationSoundFile, setNotificationSoundFile] =
     useState<NotificationSoundFile | null>(() => readSavedNotificationSoundFile());
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODEL_OPTIONS);
@@ -734,6 +800,7 @@ export function App() {
   const [rateLimitUsage, setRateLimitUsage] = useState<RateLimitUsage | null>(null);
   const [relayState, setRelayState] = useState<RelayConnectionState>("disabled");
   const [relayError, setRelayError] = useState("");
+  const [relayPresence, setRelayPresence] = useState<RelayPresence | null>(null);
   const [deviceId] = useState(() => storedDeviceId());
   const [visibleTranscriptCount, setVisibleTranscriptCount] = useState(
     INITIAL_VISIBLE_TRANSCRIPT_COUNT
@@ -742,13 +809,31 @@ export function App() {
   const [historyLoadRequest, setHistoryLoadRequest] = useState(0);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const relaySocketRef = useRef<WebSocket | null>(null);
+  const relayReconnectTimerRef = useRef<number | null>(null);
+  const relayConnectionGenerationRef = useRef(0);
+  const relayReconnectAttemptRef = useRef(0);
+  const relayConnectedAtRef = useRef<number | null>(null);
   const relayCommandHandlerRef = useRef<(data: unknown) => void>(() => undefined);
+  const pendingReliableRelayEventsRef = useRef<Record<string, RelayEnvelope>>({});
   const previousHistoryScrollHeight = useRef(0);
   const lastPasteEventAt = useRef(0);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const completionRequestRef = useRef(0);
-  const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(session?.threadId ?? null);
+  const activeSessionRef = useRef<SessionView | null>(session);
+  const activeWorkspaceRef = useRef<string | null>(workspace);
+  const workspaceSessionsRef = useRef<Record<string, SessionView[]>>(workspaceSessions);
+  const runningTurnsBySessionRef = useRef<Record<string, string>>(runningTurnsBySession);
   const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
+  const turnAssistantTextRef = useRef<Record<string, { turnId: string; text: string }>>(
+    {}
+  );
+  const reliableSnapshotRevisionRef = useRef(0);
+  const reliableSnapshotTimerRef = useRef<number | null>(null);
+  const lastReliableSnapshotSignatureRef = useRef("");
+  const processedClientCommandIdsRef = useRef<Set<string>>(
+    new Set(readStringList(CLIENT_COMMAND_IDS_STORAGE_KEY))
+  );
   const [status, setStatus] = useState(() =>
     DEMO_MODE
       ? "Demo layout fixture."
@@ -768,21 +853,83 @@ export function App() {
   const modelSelectOptions = modelOptions.some(option => option.id === model)
     ? modelOptions
     : [{ id: model, label: model }, ...modelOptions];
+  const workspaceSessionEntries = workspaces.flatMap(cwd =>
+    (workspaceSessions[cwd] ?? []).map(item => ({ workspace: cwd, session: item }))
+  );
+  const recentSessions = [...workspaceSessionEntries].sort(
+    (left, right) => (right.session.updatedAt ?? 0) - (left.session.updatedAt ?? 0)
+  );
   const favoriteSessions = favoriteSessionIds.size
-    ? workspaces.flatMap(cwd =>
-        (workspaceSessions[cwd] ?? [])
-          .filter(item => favoriteSessionIds.has(item.threadId))
-          .map(item => ({ workspace: cwd, session: item }))
+    ? workspaceSessionEntries.filter(({ session: item }) =>
+        favoriteSessionIds.has(item.threadId)
       )
     : [];
+  const isRelayConfigured = relayEndpoint.trim().length > 0 && relayApiKey.trim().length > 0;
+  const relayRetrySeconds = relayRetryDelayMs
+    ? Math.max(1, Math.ceil(relayRetryDelayMs / 1000))
+    : 1;
+  const relayStatusMessage = !isRelayConfigured
+    ? t("relayMissing")
+    : relayState === "connected"
+      ? relayPresence
+        ? relayPresence.clientCount > 0
+          ? t("mobileClientsOnline", { count: relayPresence.clientCount })
+          : t("noMobileClientsOnline")
+        : t("relayConnected")
+      : relayState === "retrying"
+        ? t("relayRetrying", { seconds: relayRetrySeconds })
+        : relayState === "auth_error"
+          ? t("relayAuthError")
+          : relayState === "connecting"
+            ? t("relayConnecting")
+            : relayError || t("relayConnectionError");
+  const relayStatusTooltip = `${t("relay")}: ${relayState}. ${relayStatusMessage}`;
+  const RelayStatusIcon =
+    relayState === "connected" || relayState === "connecting" ? Wifi : WifiOff;
 
   relayCommandHandlerRef.current = data => {
     void handleRelayMessage(data);
   };
 
   useEffect(() => {
+    setSidebarTab("recent");
+  }, []);
+
+  useEffect(() => {
+    if (DEMO_MODE) {
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      flushReliableRelayEvents();
+    }, RELIABLE_RELAY_RETRY_MS);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (reliableSnapshotTimerRef.current !== null) {
+        window.clearTimeout(reliableSnapshotTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
     activeSessionIdRef.current = session?.threadId ?? null;
-  }, [session?.threadId]);
+    activeSessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    activeWorkspaceRef.current = workspace;
+  }, [workspace]);
+
+  useEffect(() => {
+    workspaceSessionsRef.current = workspaceSessions;
+  }, [workspaceSessions]);
+
+  useEffect(() => {
+    runningTurnsBySessionRef.current = runningTurnsBySession;
+  }, [runningTurnsBySession]);
 
   useEffect(() => {
     turnStartedAtBySessionRef.current = turnStartedAtBySession;
@@ -885,6 +1032,10 @@ export function App() {
 
       if (event.type === "turn.started") {
         markSessionTurnRunning(event.threadId, event.turnId);
+        turnAssistantTextRef.current[event.threadId] = {
+          turnId: event.turnId,
+          text: ""
+        };
         updateTranscriptForActiveThread(event.threadId, previous => [
           ...previous,
           {
@@ -900,6 +1051,7 @@ export function App() {
       }
 
       if (event.type === "message.delta") {
+        appendTurnAssistantText(event.threadId, event.turnId, event.text);
         updateTranscriptForActiveThread(event.threadId, previous =>
           appendAssistantDelta(previous, event.text)
         );
@@ -980,6 +1132,12 @@ export function App() {
       if (event.type === "turn.completed") {
         clearSessionTurnRunning(event.threadId);
         handleTurnCompletedReminder(event.threadId);
+        publishTurnCompletedEvent(event);
+        const activeWorkspace = activeWorkspaceRef.current;
+        const activeSession = activeSessionRef.current;
+        if (activeWorkspace && activeSession?.threadId === event.threadId) {
+          void refreshSessions(activeWorkspace, { preserveSession: activeSession });
+        }
         if (isActiveEventThread(event.threadId)) {
           setStatus("Turn completed.");
         }
@@ -1027,50 +1185,174 @@ export function App() {
       return undefined;
     }
 
-    if (!relayEndpoint.trim() || !relayApiKey.trim()) {
-      relaySocketRef.current?.close();
-      relaySocketRef.current = null;
+    relayConnectionGenerationRef.current += 1;
+    const generation = relayConnectionGenerationRef.current;
+    const endpoint = relayEndpoint.trim();
+    const apiKey = relayApiKey.trim();
+    let disposed = false;
+    let socket: WebSocket | null = null;
+
+    const clearReconnectTimer = () => {
+      if (relayReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayReconnectTimerRef.current);
+        relayReconnectTimerRef.current = null;
+      }
+    };
+
+    const isCurrentConnection = () =>
+      !disposed && relayConnectionGenerationRef.current === generation;
+
+    const closeCurrentSocket = () => {
+      if (socket && relaySocketRef.current === socket) {
+        relaySocketRef.current = null;
+      }
+      socket?.close();
+      socket = null;
+    };
+
+    const scheduleReconnect = (reason: string) => {
+      if (!isCurrentConnection()) {
+        return;
+      }
+
+      clearReconnectTimer();
+      closeCurrentSocket();
+
+      const attempt = relayReconnectAttemptRef.current;
+      const baseDelay =
+        RELAY_RECONNECT_DELAYS_MS[Math.min(attempt, RELAY_RECONNECT_DELAYS_MS.length - 1)];
+      const jitter = Math.floor(Math.random() * RELAY_RECONNECT_JITTER_MS);
+      const delay = baseDelay + jitter;
+
+      relayReconnectAttemptRef.current = attempt + 1;
+      setRelayState("retrying");
+      setRelayError(reason);
+      setRelayRetryDelayMs(delay);
+      relayReconnectTimerRef.current = window.setTimeout(() => {
+        relayReconnectTimerRef.current = null;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      if (!isCurrentConnection()) {
+        return;
+      }
+
+      clearReconnectTimer();
+      closeCurrentSocket();
+      setRelayState("connecting");
+      setRelayError("");
+      setRelayRetryDelayMs(null);
+
+      let relayURL: string;
+      try {
+        relayURL = relayWebSocketURL(endpoint, "desktop", deviceId, apiKey);
+        socket = new WebSocket(relayURL);
+      } catch {
+        setRelayState("error");
+        setRelayError("Relay endpoint is not a valid WebSocket URL.");
+        return;
+      }
+
+      const activeSocket = socket;
+      relaySocketRef.current = activeSocket;
+
+      activeSocket.addEventListener("open", () => {
+        if (!isCurrentConnection() || relaySocketRef.current !== activeSocket) {
+          activeSocket.close();
+          return;
+        }
+        relayConnectedAtRef.current = Date.now();
+        setRelayState("connected");
+        setRelayError("");
+        setRelayRetryDelayMs(null);
+        setRelayPresence(null);
+        publishDesktopSnapshot();
+        flushReliableRelayEvents();
+      });
+      activeSocket.addEventListener("message", event => {
+        if (!isCurrentConnection() || relaySocketRef.current !== activeSocket) {
+          return;
+        }
+        relayCommandHandlerRef.current(event.data);
+      });
+      activeSocket.addEventListener("close", event => {
+        if (!isCurrentConnection() || relaySocketRef.current !== activeSocket) {
+          return;
+        }
+        relaySocketRef.current = null;
+        setRelayPresence(null);
+        const connectedAt = relayConnectedAtRef.current;
+        relayConnectedAtRef.current = null;
+        if (connectedAt && Date.now() - connectedAt >= RELAY_STABLE_CONNECTION_MS) {
+          relayReconnectAttemptRef.current = 0;
+        }
+        if (event.code === 1008 || event.code === 4401 || event.code === 4403) {
+          setRelayState("auth_error");
+          setRelayError("Relay authentication failed.");
+          setRelayRetryDelayMs(null);
+          return;
+        }
+        const reason = event.code
+          ? `Relay connection closed with code ${event.code}.`
+          : "Relay connection closed.";
+        scheduleReconnect(reason);
+      });
+      activeSocket.addEventListener("error", () => {
+        if (!isCurrentConnection() || relaySocketRef.current !== activeSocket) {
+          return;
+        }
+        setRelayState("error");
+        setRelayError("Relay WebSocket error.");
+      });
+    };
+
+    const reconnectNow = () => {
+      if (!isCurrentConnection()) {
+        return;
+      }
+      const currentSocket = relaySocketRef.current;
+      if (
+        currentSocket?.readyState === WebSocket.OPEN ||
+        currentSocket?.readyState === WebSocket.CONNECTING
+      ) {
+        return;
+      }
+      relayReconnectAttemptRef.current = 0;
+      connect();
+    };
+
+    clearReconnectTimer();
+    closeCurrentSocket();
+    relayReconnectAttemptRef.current = 0;
+    relayConnectedAtRef.current = null;
+    setRelayRetryDelayMs(null);
+
+    if (!endpoint || !apiKey) {
       setRelayState("disabled");
       setRelayError("");
+      setRelayPresence(null);
       return undefined;
     }
 
-    setRelayState("connecting");
-    setRelayError("");
-    const relayURL = relayWebSocketURL(relayEndpoint, "desktop", deviceId, relayApiKey);
-    const socket = new WebSocket(relayURL);
-    relaySocketRef.current = socket;
-
-    socket.addEventListener("open", () => {
-      setRelayState("connected");
-      setRelayError("");
-      publishDesktopSnapshot();
-    });
-    socket.addEventListener("message", event => {
-      relayCommandHandlerRef.current(event.data);
-    });
-    socket.addEventListener("close", () => {
-      if (relaySocketRef.current === socket) {
-        relaySocketRef.current = null;
-        setRelayState("error");
-        setRelayError(`Connection closed. Check endpoint and API key: ${relayURL}`);
-      }
-    });
-    socket.addEventListener("error", () => {
-      setRelayState("error");
-      setRelayError(`WebSocket error. Check endpoint and API key: ${relayURL}`);
-    });
+    window.addEventListener("online", reconnectNow);
+    window.addEventListener("focus", reconnectNow);
+    connect();
 
     return () => {
-      if (relaySocketRef.current === socket) {
-        relaySocketRef.current = null;
-      }
-      socket.close();
+      disposed = true;
+      window.removeEventListener("online", reconnectNow);
+      window.removeEventListener("focus", reconnectNow);
+      clearReconnectTimer();
+      closeCurrentSocket();
+      setRelayPresence(null);
     };
   }, [deviceId, relayApiKey, relayEndpoint]);
 
   useEffect(() => {
     publishDesktopSnapshot();
+    scheduleReliableDesktopSnapshot();
   }, [
     approvals,
     connectionState,
@@ -1282,10 +1564,6 @@ export function App() {
     workspace
   ]);
 
-  const canStartSession =
-    connectionState === "connected" &&
-    workspace !== null &&
-    !isSessionOpening;
   const isTurnRunning = activeTurnId !== null;
   const isConversationLoading =
     isSessionOpening && session !== null && transcript.length === 0;
@@ -1829,7 +2107,7 @@ export function App() {
 
   async function refreshSessions(
     cwd: string,
-    options: { openPreferred?: boolean } = {}
+    options: { openPreferred?: boolean; preserveSession?: SessionView | null } = {}
   ) {
     if (!desktopApi) {
       return;
@@ -1839,7 +2117,7 @@ export function App() {
     try {
       const response = await desktopApi.listThreads({ cwd });
       const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
-      const nextSessions = response.data.map(thread => ({
+      const listedSessions = response.data.map(thread => ({
         threadId: thread.id,
         title: titleOverrides[thread.id] ?? thread.preview ?? thread.name ?? workspaceName(cwd),
         updatedAt: thread.updatedAt,
@@ -1848,6 +2126,14 @@ export function App() {
             ? thread.status
             : JSON.stringify(thread.status)
       }));
+      const preservedSession =
+        options.preserveSession ??
+        (cwd === activeWorkspaceRef.current ? activeSessionRef.current : null);
+      const nextSessions =
+        preservedSession &&
+        !listedSessions.some(item => item.threadId === preservedSession.threadId)
+          ? upsertSession(listedSessions, preservedSession)
+          : listedSessions;
       setWorkspaceSessions(previous => ({
         ...previous,
         [cwd]: nextSessions
@@ -1861,7 +2147,7 @@ export function App() {
         if (preferred) {
           void openSession(preferred, cwd);
         } else {
-          void startSession();
+          void startNewSessionForWorkspace(cwd);
         }
       }
     } catch (error) {
@@ -1879,11 +2165,12 @@ export function App() {
 
   async function sendTurnRequest(
     text: string,
-    outgoingAttachments: ComposerAttachment[]
+    outgoingAttachments: ComposerAttachment[],
+    targetSession: SessionView | null = session
   ) {
     if (
       !desktopApi ||
-      !session ||
+      !targetSession ||
       (text.trim().length === 0 && outgoingAttachments.length === 0)
     ) {
       return;
@@ -1905,16 +2192,16 @@ export function App() {
 
     try {
       const response = await desktopApi.startTurn({
-        threadId: session.threadId,
+        threadId: targetSession.threadId,
         text: trimmedText,
         input,
         ...codexPermissionOptions(permissionMode),
         ...codexModelOptions(model, modelEffort)
       });
-      markSessionTurnRunning(session.threadId, response.turn.id);
+      markSessionTurnRunning(targetSession.threadId, response.turn.id);
       requestScrollToBottom();
     } catch (error) {
-      clearSessionTurnRunning(session.threadId);
+      clearSessionTurnRunning(targetSession.threadId);
       setAttachments(outgoingAttachments);
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -1996,22 +2283,101 @@ export function App() {
     if (!envelope) {
       return;
     }
+    const clientCommandId = clientCommandIdFromEnvelope(envelope);
+    if (clientCommandId && processedClientCommandIdsRef.current.has(clientCommandId)) {
+      ackClientCommand(clientCommandId);
+      return;
+    }
+
+    if (envelope.type === "relay.presence") {
+      setRelayPresence(relayPresenceFromPayload(envelope.payload));
+      return;
+    }
+
+    if (envelope.type === "event.published") {
+      const sourceEventId = relayPublishedSourceEventId(envelope.payload);
+      if (sourceEventId) {
+        delete pendingReliableRelayEventsRef.current[sourceEventId];
+      }
+      return;
+    }
+
+    if (clientCommandId && envelope.type.startsWith("client.")) {
+      ackClientCommand(clientCommandId);
+    }
+
+    if (envelope.type === "client.search_composer") {
+      const mode = envelope.payload?.mode;
+      const requestId = envelope.payload?.requestId;
+      const query = envelope.payload?.query ?? "";
+      const limit = envelope.payload?.limit ?? 36;
+      const cwd = envelope.payload?.workspace || activeWorkspaceRef.current;
+      if (!desktopApi || (mode !== "file" && mode !== "skill") || !requestId) {
+        return;
+      }
+      let items: ComposerSuggestion[] = [];
+      try {
+        items =
+          mode === "file" && cwd
+            ? await desktopApi.searchWorkspaceFiles({ cwd, query, limit })
+            : mode === "skill"
+              ? await desktopApi.searchSkills({ query, limit })
+              : [];
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      publishRelay({
+        type: "desktop.composer_suggestions",
+        payload: { requestId, mode, query, items }
+      });
+      return;
+    }
 
     if (envelope.type === "client.send_message") {
       const text = envelope.payload?.text?.trim() ?? "";
       const remoteAttachments = validRemoteAttachments(envelope.payload?.attachments);
       if (!text && remoteAttachments.length === 0) {
+        ackClientCommand(clientCommandId);
         return;
       }
-      const savedAttachments =
-        remoteAttachments.length > 0 && desktopApi
-          ? await desktopApi.saveRemoteAttachments(remoteAttachments)
+      const targetSession = sessionTargetFromCommand(envelope);
+      if (!targetSession) {
+        setStatus("Mobile message ignored: no target session is available.");
+        ackClientCommand(clientCommandId);
+        return;
+      }
+      if (runningTurnsBySessionRef.current[targetSession.session.threadId]) {
+        setStatus("Mobile message ignored: target session is already working.");
+        ackClientCommand(clientCommandId);
+        return;
+      }
+      ackClientCommand(clientCommandId);
+      const remoteImages = remoteAttachments.filter(
+        (attachment): attachment is Extract<RemoteAttachmentInput, { kind: "image" }> =>
+          attachment.kind === "image"
+      );
+      const remoteMentions = remoteAttachments
+        .filter(
+          (attachment): attachment is Extract<RemoteAttachmentInput, { kind: "mention" }> =>
+            attachment.kind === "mention"
+        )
+        .map(attachment => ({
+          id: `${attachment.path}-${Date.now()}`,
+          type: "mention" as const,
+          path: attachment.path,
+          name: attachment.name
+        }));
+      const savedImages =
+        remoteImages.length > 0 && desktopApi
+          ? await desktopApi.saveRemoteAttachments(remoteImages)
           : [];
-      await sendTurnRequest(text, savedAttachments);
+      const savedAttachments = [...savedImages, ...remoteMentions];
+      await sendTurnRequest(text, savedAttachments, targetSession.session);
       return;
     }
 
     if (envelope.type === "client.interrupt") {
+      ackClientCommand(clientCommandId);
       await interruptTurn();
       return;
     }
@@ -2025,15 +2391,35 @@ export function App() {
       const target =
         (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
         ({ threadId: sessionId, title: workspaceName(cwd) } satisfies SessionView);
+      ackClientCommand(clientCommandId);
       await openSession(target, cwd);
       return;
     }
 
     if (envelope.type === "client.open_workspace") {
-      const cwd = envelope.payload?.workspace;
-      if (cwd && workspaces.includes(cwd)) {
+      const cwd = envelope.payload?.workspace?.trim();
+      ackClientCommand(clientCommandId);
+      if (cwd) {
+        const nextWorkspaces = upsertWorkspace(workspaces, cwd);
+        setWorkspaces(nextWorkspaces);
+        saveWorkspaces(nextWorkspaces);
         selectWorkspace(cwd);
-        setStatus(`Selected workspace ${workspaceName(cwd)} from mobile.`);
+        setStatus(`Opening workspace ${workspaceName(cwd)} from mobile.`);
+        await refreshSessions(cwd, { openPreferred: true });
+      }
+      return;
+    }
+
+    if (envelope.type === "client.open_workspace_path") {
+      const cwd = envelope.payload?.workspace?.trim();
+      ackClientCommand(clientCommandId);
+      if (cwd) {
+        const nextWorkspaces = upsertWorkspace(workspaces, cwd);
+        setWorkspaces(nextWorkspaces);
+        saveWorkspaces(nextWorkspaces);
+        selectWorkspace(cwd);
+        setStatus(`Opening workspace ${workspaceName(cwd)} from mobile.`);
+        await refreshSessions(cwd, { openPreferred: true });
       }
       return;
     }
@@ -2041,7 +2427,10 @@ export function App() {
     if (envelope.type === "client.new_session") {
       const cwd = envelope.payload?.workspace;
       if (cwd) {
+        ackClientCommand(clientCommandId);
         await startNewSessionForWorkspace(cwd);
+      } else {
+        ackClientCommand(clientCommandId);
       }
       return;
     }
@@ -2056,6 +2445,7 @@ export function App() {
       const target =
         (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
         ({ threadId: sessionId, title, updatedAt: undefined } satisfies SessionView);
+      ackClientCommand(clientCommandId);
       await renameSessionTo(cwd, target, title, { prompt: false });
       return;
     }
@@ -2067,6 +2457,7 @@ export function App() {
         updateSessionIcon(sessionId, iconId);
         setStatus("Session icon updated from mobile.");
       }
+      ackClientCommand(clientCommandId);
       return;
     }
 
@@ -2077,6 +2468,7 @@ export function App() {
       if (approval && decision) {
         await resolveApproval(approval, decision);
       }
+      ackClientCommand(clientCommandId);
       return;
     }
 
@@ -2085,6 +2477,7 @@ export function App() {
       if (isPermissionMode(nextMode)) {
         updatePermissionMode(nextMode);
       }
+      ackClientCommand(clientCommandId);
       return;
     }
 
@@ -2095,10 +2488,11 @@ export function App() {
       if (isModelEffort(envelope.payload?.effort)) {
         updateModelEffort(envelope.payload.effort);
       }
+      ackClientCommand(clientCommandId);
     }
   }
 
-  function publishDesktopSnapshot() {
+  function buildDesktopSnapshotPayload(): unknown {
     const snapshotWorkspaces: RemoteSnapshotWorkspace[] = workspaces.map(cwd => ({
       path: cwd,
       name: workspaceName(cwd),
@@ -2114,46 +2508,212 @@ export function App() {
       }))
     }));
 
+    return {
+      device: {
+        id: deviceId,
+        name: "three workstation",
+        workspace: workspace ?? "",
+        connection: relayState === "connected" ? "online" : "offline",
+        lastSeen: "Now"
+      },
+      workspaces: snapshotWorkspaces,
+      activeWorkspace: workspace,
+      sessions: sessions.map(item => ({
+        id: item.threadId,
+        title: item.title,
+        updatedAt: sessionMeta(item),
+        status: runningTurnsBySession[item.threadId] ? "working" : "ready",
+        iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
+        unread: unreadSessionIds.has(item.threadId),
+        turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
+        lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
+      })),
+      activeSessionId: session?.threadId ?? null,
+      messages: transcript.slice(-40).map(remoteMessageFromTranscript),
+      approvals: approvals.map(item => ({
+        id: String(item.id),
+        title: item.type,
+        detail: approvalSummary(item.request),
+        risk: item.type === "permissions" ? "high" : "medium"
+      })),
+      status,
+      permissionMode,
+      model,
+      modelOptions,
+      modelEffort,
+      contextUsage,
+      rateLimitUsage,
+      isWorking: session ? Boolean(runningTurnsBySession[session.threadId]) : false
+    };
+  }
+
+  function publishDesktopSnapshot() {
     publishRelay({
       type: "desktop.snapshot",
+      payload: buildDesktopSnapshotPayload()
+    });
+  }
+
+  function scheduleReliableDesktopSnapshot() {
+    if (DEMO_MODE) {
+      return;
+    }
+    if (reliableSnapshotTimerRef.current !== null) {
+      window.clearTimeout(reliableSnapshotTimerRef.current);
+    }
+    reliableSnapshotTimerRef.current = window.setTimeout(() => {
+      reliableSnapshotTimerRef.current = null;
+      publishReliableDesktopSnapshot();
+    }, RELIABLE_SNAPSHOT_DEBOUNCE_MS);
+  }
+
+  function publishReliableDesktopSnapshot() {
+    const snapshot = buildDesktopSnapshotPayload();
+    const signature = JSON.stringify(snapshot);
+    if (signature === lastReliableSnapshotSignatureRef.current) {
+      return;
+    }
+    lastReliableSnapshotSignatureRef.current = signature;
+
+    const revision = reliableSnapshotRevisionRef.current + 1;
+    reliableSnapshotRevisionRef.current = revision;
+    const sourceEventId = `${deviceId}:desktop.snapshot:${revision}`;
+    prunePendingReliableSnapshotEvents();
+    publishReliableRelayEvent(sourceEventId, {
+      type: "event.publish",
       payload: {
-        device: {
-          id: deviceId,
-          name: "three workstation",
-          workspace: workspace ?? "",
-          connection: relayState === "connected" ? "online" : "offline",
-          lastSeen: "Now"
-        },
-        workspaces: snapshotWorkspaces,
-        activeWorkspace: workspace,
-        sessions: sessions.map(item => ({
-          id: item.threadId,
-          title: item.title,
-          updatedAt: sessionMeta(item),
-          status: runningTurnsBySession[item.threadId] ? "working" : "ready",
-          iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
-          unread: unreadSessionIds.has(item.threadId),
-          turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
-          lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
-        })),
-        activeSessionId: session?.threadId ?? null,
-        messages: transcript.slice(-40).map(remoteMessageFromTranscript),
-        approvals: approvals.map(item => ({
-          id: String(item.id),
-          title: item.type,
-          detail: approvalSummary(item.request),
-          risk: item.type === "permissions" ? "high" : "medium"
-        })),
-        status,
-        permissionMode,
-        model,
-        modelOptions,
-        modelEffort,
-        contextUsage,
-        rateLimitUsage,
-        isWorking: session ? Boolean(runningTurnsBySession[session.threadId]) : false
+        source_event_id: sourceEventId,
+        type: "desktop.snapshot",
+        workspace_id: workspace ?? "",
+        session_id: session?.threadId ?? "",
+        title: session?.title ?? "Desktop snapshot",
+        body: status,
+        payload: {
+          revision,
+          snapshot
+        }
       }
     });
+  }
+
+  function publishTurnCompletedEvent(
+    event: Extract<CodexAdapterEvent, { type: "turn.completed" }>
+  ) {
+    const sessionInfo = sessionInfoForThread(event.threadId);
+    const sessionTitle = sessionInfo.title.trim();
+    const finalMessage = finalAssistantMessageForTurn(event.threadId, event.turnId);
+    const notificationBody = notificationBodyFromFinalMessage(finalMessage);
+    const startedAt = turnStartedAtBySessionRef.current[event.threadId];
+    const durationMs = startedAt
+      ? Math.max(Date.now() - startedAt, 0)
+      : lastTurnDurationBySession[event.threadId] ?? null;
+    const sourceEventId = `${deviceId}:${event.threadId}:${event.turnId}:turn.completed`;
+    publishReliableRelayEvent(sourceEventId, {
+      type: "event.publish",
+      payload: {
+        source_event_id: sourceEventId,
+        type: "turn.completed",
+        workspace_id: sessionInfo.workspace ?? "",
+        session_id: event.threadId,
+        title: sessionTitle || "Codex+",
+        body: notificationBody || "Codex turn completed.",
+        payload: {
+          turn_id: event.turnId,
+          duration_ms: durationMs,
+          session_title: sessionTitle,
+          workspace: sessionInfo.workspace ?? "",
+          final_message: notificationBody
+        }
+      }
+    });
+  }
+
+  function appendTurnAssistantText(threadId: string, turnId: string, delta: string) {
+    if (!threadId || !turnId || !delta) {
+      return;
+    }
+    const current = turnAssistantTextRef.current[threadId];
+    turnAssistantTextRef.current[threadId] =
+      current?.turnId === turnId
+        ? { turnId, text: current.text + delta }
+        : { turnId, text: delta };
+  }
+
+  function finalAssistantMessageForTurn(threadId: string, turnId: string): string {
+    const current = turnAssistantTextRef.current[threadId];
+    if (current?.turnId === turnId) {
+      return current.text;
+    }
+    return "";
+  }
+
+  function sessionInfoForThread(threadId: string) {
+    for (const [cwd, items] of Object.entries(workspaceSessionsRef.current)) {
+      const found = items.find(item => item.threadId === threadId);
+      if (found) {
+        return { workspace: cwd, title: found.title };
+      }
+    }
+    const activeSession = activeSessionRef.current;
+    if (activeSession?.threadId === threadId) {
+      return { workspace: activeWorkspaceRef.current, title: activeSession.title };
+    }
+    return { workspace: null, title: "" };
+  }
+
+  function sessionTargetFromCommand(envelope: RemoteCommandEnvelope): {
+    workspace: string | null;
+    session: SessionView;
+  } | null {
+    const payload = envelope.payload;
+    const sessionId = payload?.sessionId?.trim();
+    const cwd = payload?.workspace?.trim();
+    if (sessionId) {
+      const workspaceEntries = cwd
+        ? [[cwd, workspaceSessionsRef.current[cwd] ?? []] as const]
+        : Object.entries(workspaceSessionsRef.current);
+      for (const [workspacePath, items] of workspaceEntries) {
+        const found = items.find(item => item.threadId === sessionId);
+        if (found) {
+          return { workspace: workspacePath, session: found };
+        }
+      }
+      return {
+        workspace: cwd || activeWorkspaceRef.current,
+        session: {
+          threadId: sessionId,
+          title: cwd ? workspaceName(cwd) : "Mobile session"
+        }
+      };
+    }
+    const activeSession = activeSessionRef.current;
+    return activeSession
+      ? { workspace: activeWorkspaceRef.current, session: activeSession }
+      : null;
+  }
+
+  function publishReliableRelayEvent(sourceEventId: string, message: RelayEnvelope) {
+    pendingReliableRelayEventsRef.current[sourceEventId] = message;
+    flushReliableRelayEvents();
+  }
+
+  function prunePendingReliableSnapshotEvents() {
+    const snapshotPrefix = `${deviceId}:desktop.snapshot:`;
+    for (const sourceEventId of Object.keys(pendingReliableRelayEventsRef.current)) {
+      if (sourceEventId.startsWith(snapshotPrefix)) {
+        delete pendingReliableRelayEventsRef.current[sourceEventId];
+      }
+    }
+  }
+
+  function flushReliableRelayEvents() {
+    const socket = relaySocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    for (const message of Object.values(pendingReliableRelayEventsRef.current)) {
+      socket.send(JSON.stringify(message));
+    }
   }
 
   function publishRelay(message: RelayEnvelope) {
@@ -2162,6 +2722,21 @@ export function App() {
       return;
     }
     socket.send(JSON.stringify(message));
+  }
+
+  function ackClientCommand(clientCommandId: string | null) {
+    if (!clientCommandId) {
+      return;
+    }
+    const nextIds = rememberClientCommandId(
+      processedClientCommandIdsRef.current,
+      clientCommandId
+    );
+    processedClientCommandIdsRef.current = nextIds;
+    publishRelay({
+      type: "client.command_ack",
+      payload: { client_message_id: clientCommandId }
+    });
   }
 
   function updateRelayEndpoint(value: string) {
@@ -2196,6 +2771,15 @@ export function App() {
     setSoundNotificationsEnabled(value);
     window.localStorage.setItem(SOUND_NOTIFICATIONS_STORAGE_KEY, String(value));
     setStatus(value ? "Turn completion sound enabled." : "Turn completion sound disabled.");
+  }
+
+  function updateNotificationSoundVolume(value: number) {
+    const nextVolume = clampPercent(Math.round(value));
+    setNotificationSoundVolume(nextVolume);
+    window.localStorage.setItem(
+      NOTIFICATION_SOUND_VOLUME_STORAGE_KEY,
+      String(nextVolume)
+    );
   }
 
   async function chooseNotificationSound() {
@@ -2258,13 +2842,15 @@ export function App() {
 
   async function playTurnCompletionSound() {
     try {
-      if (notificationSoundFile?.url) {
-        const audio = new Audio(notificationSoundFile.url);
-        audio.volume = 0.72;
+      try {
+        const audio = new Audio(
+          notificationSoundFile?.url ?? DEFAULT_NOTIFICATION_SOUND_FILE.url
+        );
+        audio.volume = notificationSoundVolume / 100;
         await audio.play();
-        return;
+      } catch {
+        await playFallbackNotificationTone(notificationSoundVolume);
       }
-      await playFallbackNotificationTone();
     } catch (error) {
       setStatus(
         error instanceof Error
@@ -2507,7 +3093,7 @@ export function App() {
           <div className="brandMark">C</div>
           <div className="brandText">
             <h1>Codex+</h1>
-            <p>{t("localWorkspace")}</p>
+            <p>{APP_VERSION_LABEL}</p>
           </div>
           <button
             className="sidebarToggle"
@@ -2554,24 +3140,8 @@ export function App() {
 
         <section className="panel grow">
           <div className="panelHeader">
-            <h2>{t("sessions")}</h2>
+            <h2>{t("workspaces")}</h2>
             <div className="panelActions">
-              <button
-                className="miniButton"
-                type="button"
-                onClick={startSession}
-                disabled={!canStartSession}
-              >
-                {t("latest")}
-              </button>
-              <button
-                className="miniButton primaryMiniButton"
-                type="button"
-                onClick={startNewSession}
-                disabled={connectionState !== "connected" || !workspace || isSessionOpening}
-              >
-                {t("new")}
-              </button>
               <button
                 className="miniButton"
                 type="button"
@@ -2579,6 +3149,7 @@ export function App() {
                 aria-label={t("addWorkspace")}
               >
                 <Plus size={14} />
+                <span>{t("addWorkspace")}</span>
               </button>
             </div>
           </div>
@@ -2591,6 +3162,15 @@ export function App() {
               onClick={() => setSidebarTab("all")}
             >
               {t("all")}
+            </button>
+            <button
+              aria-selected={sidebarTab === "recent"}
+              className="sidebarTab"
+              role="tab"
+              type="button"
+              onClick={() => setSidebarTab("recent")}
+            >
+              {t("recent")}
             </button>
             <button
               aria-selected={sidebarTab === "favorites"}
@@ -2681,7 +3261,35 @@ export function App() {
                       </div>
                     );
                   })
-                : favoriteSessions.length > 0
+                : sidebarTab === "recent"
+                  ? recentSessions.length > 0
+                    ? recentSessions.map(({ workspace: cwd, session: item }) => (
+                        <div className="favoriteSessionGroup" key={item.threadId}>
+                          <SessionTreeRow
+                            active={cwd === workspace && item.threadId === session?.threadId}
+                            favorite={favoriteSessionIds.has(item.threadId)}
+                            iconId={sessionIconFor(
+                              item.threadId,
+                              sessionIconOverrides[item.threadId]
+                            )}
+                            item={item}
+                            language={language}
+                            meta={`${workspaceName(cwd)} · ${sessionMeta(item)}`}
+                            unread={unreadSessionIds.has(item.threadId)}
+                            working={Boolean(runningTurnsBySession[item.threadId])}
+                            onFavorite={() => toggleFavoriteSession(item.threadId)}
+                            onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
+                            onOpen={() => void openSession(item, cwd)}
+                            onRename={title => void renameSession(cwd, item, title)}
+                          />
+                        </div>
+                      ))
+                    : (
+                        <div className="emptyTree">
+                          <p>{t("recentEmpty")}</p>
+                        </div>
+                      )
+                  : favoriteSessions.length > 0
                   ? favoriteSessions.map(({ workspace: cwd, session: item }) => (
                       <div className="favoriteSessionGroup" key={item.threadId}>
                         <SessionTreeRow
@@ -2733,6 +3341,20 @@ export function App() {
               value={rateLimitUsage?.secondary?.leftPercent ?? null}
               fallback={t("rateLimitUnknown")}
             />
+	            <button
+	              aria-label={relayStatusTooltip}
+	              className="sidebarRelayButton"
+	              data-peer-state={(relayPresence?.clientCount ?? 0) > 0 ? "connected" : "empty"}
+	              data-state={relayState}
+	              onClick={() => setIsSettingsOpen(true)}
+	              title={relayStatusTooltip}
+	              type="button"
+	            >
+	              <RelayStatusIcon size={15} />
+	              <span className="sidebarRelayLabel">
+	                {relayPresence?.clientCount ?? 0} {t("mobileClientsShort")}
+	              </span>
+	            </button>
           </div>
           <div className="sidebarQuickControls">
             <SidebarOptionMenu
@@ -2773,11 +3395,6 @@ export function App() {
           <div>
             <h2>{session?.title ?? t("newCodexSession")}</h2>
             <p>{status}</p>
-          </div>
-          <div className="topbarActions">
-            <div className="statusPill" data-state={connectionState}>
-              {connectionState}
-            </div>
           </div>
         </header>
 
@@ -3032,13 +3649,15 @@ export function App() {
           relayApiKey={relayApiKey}
           relayDeviceId={deviceId}
           relayEndpoint={relayEndpoint}
-          relayError={relayError}
+          relayPresence={relayPresence}
           relayState={relayState}
+          relayStatusMessage={relayStatusMessage}
           language={language}
           model={model}
           modelEffort={modelEffort}
           modelOptions={modelSelectOptions}
           notificationSoundFile={notificationSoundFile}
+          notificationSoundVolume={notificationSoundVolume}
           permissionMode={permissionMode}
           themeMode={themeMode}
           soundNotificationsEnabled={soundNotificationsEnabled}
@@ -3051,6 +3670,7 @@ export function App() {
           onPermissionModeChange={updatePermissionMode}
           onRelayApiKeyChange={updateRelayApiKey}
           onRelayEndpointChange={updateRelayEndpoint}
+          onNotificationSoundVolumeChange={updateNotificationSoundVolume}
           onSoundNotificationsEnabledChange={updateSoundNotificationsEnabled}
           onThemeModeChange={updateThemeMode}
         />
@@ -3223,6 +3843,7 @@ function SessionTreeRow({
   onRename: (title: string) => void | Promise<void>;
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
+  const [isIconPickerOpen, setIsIconPickerOpen] = useState(false);
   const [draftTitle, setDraftTitle] = useState(item.title);
   const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
     textFor(language, key, values);
@@ -3251,6 +3872,7 @@ function SessionTreeRow({
     <div
       className="sessionChild"
       data-active={active}
+      data-icon-picker-open={isIconPickerOpen}
       data-renaming={isRenaming}
       data-working={working}
     >
@@ -3287,6 +3909,7 @@ function SessionTreeRow({
             currentIconId={iconId}
             language={language}
             sessionTitle={item.title}
+            onOpenChange={setIsIconPickerOpen}
             onIconChange={onIconChange}
           />
           <button className="sessionOpenButton" type="button" onClick={onOpen}>
@@ -3326,11 +3949,13 @@ function SessionIconPicker({
   currentIconId,
   language,
   sessionTitle,
+  onOpenChange,
   onIconChange
 }: {
   currentIconId: SessionIconId;
   language: UILanguage;
   sessionTitle: string;
+  onOpenChange: (open: boolean) => void;
   onIconChange: (iconId: SessionIconId) => void;
 }) {
   const detailsRef = useRef<HTMLDetailsElement | null>(null);
@@ -3338,7 +3963,11 @@ function SessionIconPicker({
     textFor(language, key, values);
 
   return (
-    <details className="sessionIconPicker" ref={detailsRef}>
+    <details
+      className="sessionIconPicker"
+      ref={detailsRef}
+      onToggle={() => onOpenChange(detailsRef.current?.open ?? false)}
+    >
       <summary
         aria-label={t("changeIcon", { title: sessionTitle })}
         style={sessionIconStyle(currentIconId)}
@@ -3584,12 +4213,14 @@ function SettingsModal({
   modelEffort,
   modelOptions,
   notificationSoundFile,
+  notificationSoundVolume,
   permissionMode,
   relayApiKey,
   relayDeviceId,
   relayEndpoint,
-  relayError,
+  relayPresence,
   relayState,
+  relayStatusMessage,
   language,
   soundNotificationsEnabled,
   themeMode,
@@ -3599,6 +4230,7 @@ function SettingsModal({
   onLanguageChange,
   onModelChange,
   onModelEffortChange,
+  onNotificationSoundVolumeChange,
   onPermissionModeChange,
   onRelayApiKeyChange,
   onRelayEndpointChange,
@@ -3609,12 +4241,14 @@ function SettingsModal({
   modelEffort: ModelEffort;
   modelOptions: ModelOption[];
   notificationSoundFile: NotificationSoundFile | null;
+  notificationSoundVolume: number;
   permissionMode: PermissionMode;
   relayApiKey: string;
   relayDeviceId: string;
   relayEndpoint: string;
-  relayError: string;
+  relayPresence: RelayPresence | null;
   relayState: RelayConnectionState;
+  relayStatusMessage: string;
   language: UILanguage;
   soundNotificationsEnabled: boolean;
   themeMode: ThemeMode;
@@ -3624,6 +4258,7 @@ function SettingsModal({
   onLanguageChange: (value: UILanguage) => void;
   onModelChange: (value: string) => void;
   onModelEffortChange: (value: ModelEffort) => void;
+  onNotificationSoundVolumeChange: (value: number) => void;
   onPermissionModeChange: (value: PermissionMode) => void;
   onRelayApiKeyChange: (value: string) => void;
   onRelayEndpointChange: (value: string) => void;
@@ -3733,10 +4368,28 @@ function SettingsModal({
               </span>
             </label>
 
+            <label className="soundVolumeControl">
+              <span>{t("soundVolume")}</span>
+              <input
+                aria-valuetext={`${notificationSoundVolume}%`}
+                max={100}
+                min={0}
+                step={1}
+                type="range"
+                value={notificationSoundVolume}
+                onChange={event =>
+                  onNotificationSoundVolumeChange(Number(event.target.value))
+                }
+              />
+              <strong>{notificationSoundVolume}%</strong>
+            </label>
+
             <div className="soundFilePicker">
               <div>
                 <span>{t("audioFile")}</span>
-                <strong>{notificationSoundFile?.name ?? t("defaultTone")}</strong>
+                <strong>
+                  {notificationSoundFile?.name ?? DEFAULT_NOTIFICATION_SOUND_FILE.name}
+                </strong>
                 {notificationSoundFile ? <small>{notificationSoundFile.path}</small> : null}
               </div>
               <div className="soundFileActions">
@@ -3860,13 +4513,7 @@ function SettingsModal({
           <section className="settingsSection" aria-labelledby="relay-status-title">
             <div>
               <h3 id="relay-status-title">{t("status")}</h3>
-              <p>
-                {relayApiKey
-                  ? relayState === "connected"
-                    ? t("relayConnected")
-                    : relayError || t("relayConnecting")
-                  : t("relayMissing")}
-              </p>
+              <p>{relayStatusMessage}</p>
             </div>
             <div className="settingsSummary">
               <span>{t("endpoint")}</span>
@@ -3906,6 +4553,8 @@ function SettingsModal({
               </div>
               <span>{t("connection")}</span>
               <strong>{relayState}</strong>
+              <span>{t("mobileClients")}</span>
+              <strong>{relayPresence ? relayPresence.clientCount : 0}</strong>
             </div>
           </section>
         </div>
@@ -4000,14 +4649,25 @@ function readSavedNotificationSoundFile(): NotificationSoundFile | null {
   return null;
 }
 
-async function playFallbackNotificationTone(): Promise<void> {
+function readSavedNotificationSoundVolume(): number {
+  const saved = Number(window.localStorage.getItem(NOTIFICATION_SOUND_VOLUME_STORAGE_KEY));
+  return Number.isFinite(saved)
+    ? clampPercent(Math.round(saved))
+    : DEFAULT_NOTIFICATION_SOUND_VOLUME;
+}
+
+async function playFallbackNotificationTone(volume: number): Promise<void> {
   const audioContext = new AudioContext();
   const oscillator = audioContext.createOscillator();
   const gain = audioContext.createGain();
   oscillator.type = "sine";
   oscillator.frequency.value = 880;
+  const peakVolume = 0.18 * (clampPercent(volume) / 100);
   gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.012);
+  gain.gain.exponentialRampToValueAtTime(
+    Math.max(peakVolume, 0.0001),
+    audioContext.currentTime + 0.012
+  );
   gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.22);
   oscillator.connect(gain);
   gain.connect(audioContext.destination);
@@ -4259,7 +4919,12 @@ function relayWebSocketURL(
   deviceId: string,
   apiKey: string
 ): string {
-  const base = endpoint.trim().replace(/\/+$/, "");
+  let base = endpoint.trim().replace(/\/+$/, "");
+  if (base.startsWith("https://")) {
+    base = `wss://${base.slice("https://".length)}`;
+  } else if (base.startsWith("http://")) {
+    base = `ws://${base.slice("http://".length)}`;
+  }
   const separator = base.includes("?") ? "&" : "?";
   return `${base}/ws/${role}${separator}device_id=${encodeURIComponent(
     deviceId
@@ -4278,19 +4943,49 @@ function parseRelayEnvelope(data: unknown): RemoteCommandEnvelope | null {
   }
 }
 
+function relayPublishedSourceEventId(payload: unknown): string | null {
+  const event = asRecord(asRecord(payload).event);
+  const sourceEventId = event.source_event_id;
+  return typeof sourceEventId === "string" && sourceEventId.length > 0
+    ? sourceEventId
+    : null;
+}
+
+function relayPresenceFromPayload(payload: unknown): RelayPresence {
+  const record = asRecord(payload);
+  return {
+    desktopCount: numberOrNull(record.desktop_count) ?? 0,
+    clientCount: numberOrNull(record.client_count) ?? 0,
+    connected: Boolean(record.connected),
+    lastSeen: stringOrUndefined(record.last_seen)
+  };
+}
+
+function clientCommandIdFromEnvelope(envelope: RemoteCommandEnvelope): string | null {
+  const id = envelope.payload?.client_message_id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
 function validRemoteAttachments(value: unknown): RemoteAttachmentInput[] {
   if (!Array.isArray(value)) {
     return [];
   }
   return value.filter((item): item is RemoteAttachmentInput => {
     const record = asRecord(item);
+    if (record.kind === "image") {
+      return (
+        typeof record.name === "string" &&
+        typeof record.mimeType === "string" &&
+        record.mimeType.startsWith("image/") &&
+        typeof record.dataUrl === "string" &&
+        record.dataUrl.startsWith("data:image/")
+      );
+    }
     return (
-      record.kind === "image" &&
+      record.kind === "mention" &&
       typeof record.name === "string" &&
-      typeof record.mimeType === "string" &&
-      record.mimeType.startsWith("image/") &&
-      typeof record.dataUrl === "string" &&
-      record.dataUrl.startsWith("data:image/")
+      typeof record.path === "string" &&
+      record.path.length > 0
     );
   });
 }
@@ -4616,6 +5311,29 @@ function appendAssistantDelta(
 
   next.push({ id: `assistant-${Date.now()}`, role: "assistant", text: delta });
   return next;
+}
+
+function notificationBodyFromFinalMessage(message: string): string {
+  return truncateNotificationText(cleanNotificationText(message), NOTIFICATION_BODY_MAX_CHARS);
+}
+
+function cleanNotificationText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_~>#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateNotificationText(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) {
+    return text;
+  }
+  return `${chars.slice(0, maxChars).join("").trimEnd()}...`;
 }
 
 function transcriptFromThread(thread: Thread): TranscriptEntry[] {
@@ -5358,6 +6076,12 @@ function readStringList(key: string): string[] {
 
 function saveStringList(key: string, values: string[]): void {
   window.localStorage.setItem(key, JSON.stringify(values));
+}
+
+function rememberClientCommandId(previous: Set<string>, id: string): Set<string> {
+  const nextValues = [...previous, id].slice(-200);
+  saveStringList(CLIENT_COMMAND_IDS_STORAGE_KEY, nextValues);
+  return new Set(nextValues);
 }
 
 function readStringMap(key: string): Record<string, string> {

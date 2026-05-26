@@ -257,7 +257,7 @@ textarea:focus-visible {
 .collapsedSessionButton {
   display: grid;
   position: relative;
-  width: 46px;
+  width: 42px;
   height: 42px;
   place-items: center;
   border: 1px solid var(--session-icon-soft);
@@ -282,6 +282,11 @@ textarea:focus-visible {
   border-color: var(--session-icon-fg);
   color: var(--session-icon-fg);
   background: var(--session-icon-soft);
+}
+
+.collapsedSessionButton[data-active="true"] {
+  border-color: var(--color-primary);
+  box-shadow: inset 0 0 0 2px var(--session-icon-fg);
 }
 
 .collapsedUnreadDot {
@@ -338,6 +343,13 @@ textarea:focus-visible {
   align-items: center;
   gap: var(--space-md);
   padding: 0 1px 2px;
+}
+
+.accountSummary .sidebarRelayButton {
+  width: auto;
+  height: 28px;
+  margin-left: auto;
+  padding-right: 8px;
 }
 
 .rateLimitRing {
@@ -403,8 +415,10 @@ textarea:focus-visible {
 }
 
 .sidebarOptionMenu summary,
+.sidebarRelayButton,
 .sidebarSettingsButton {
   display: inline-flex;
+  position: relative;
   align-items: center;
   justify-content: center;
   gap: 5px;
@@ -430,11 +444,13 @@ textarea:focus-visible {
 }
 
 .sidebarOptionMenu summary svg,
+.sidebarRelayButton svg,
 .sidebarSettingsButton svg {
   flex: 0 0 auto;
 }
 
 .sidebarOptionMenu summary span,
+.sidebarRelayButton span,
 .sidebarSettingsButton span {
   min-width: 0;
   overflow: hidden;
@@ -442,12 +458,64 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.sidebarRelayLabel {
+  max-width: 76px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sidebarRelayButton[data-peer-state="connected"] .sidebarRelayLabel {
+  color: var(--color-success);
+}
+
 .sidebarSettingsButton:hover,
+.sidebarRelayButton:hover,
 .sidebarOptionMenu summary:hover,
 .sidebarOptionMenu[open] summary {
   border-color: var(--color-hairline);
   color: var(--color-ink);
   background: var(--color-surface-soft);
+}
+
+.sidebarRelayButton[data-state="connected"] {
+  color: var(--color-success);
+}
+
+.sidebarRelayButton[data-state="connecting"],
+.sidebarRelayButton[data-state="retrying"] {
+  color: var(--color-signature-mustard);
+}
+
+.sidebarRelayButton[data-state="error"],
+.sidebarRelayButton[data-state="auth_error"] {
+  color: var(--color-danger);
+}
+
+.sidebarRelayButton::after {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--color-canvas);
+  border-radius: var(--radius-pill);
+  background: var(--color-border-strong);
+  content: "";
+}
+
+.sidebarRelayButton[data-state="connected"]::after {
+  background: var(--color-success);
+}
+
+.sidebarRelayButton[data-state="connecting"]::after,
+.sidebarRelayButton[data-state="retrying"]::after {
+  background: var(--color-signature-mustard);
+}
+
+.sidebarRelayButton[data-state="error"]::after,
+.sidebarRelayButton[data-state="auth_error"]::after {
+  background: var(--color-danger);
 }
 
 .sidebarOptionPopover {
@@ -504,14 +572,29 @@ textarea:focus-visible {
   border-top: 0;
 }
 
-.sidebar[data-collapsed="true"] .accountSummary,
+.sidebar[data-collapsed="true"] .accountSummary .rateLimitRing,
+.sidebar[data-collapsed="true"] .sidebarRelayLabel,
 .sidebar[data-collapsed="true"] .sidebarSettingsButton span {
   display: none;
 }
 
+.sidebar[data-collapsed="true"] .accountSummary {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar[data-collapsed="true"] .accountSummary .sidebarRelayButton {
+  width: 42px;
+  height: 38px;
+  margin-left: 0;
+  padding: 0;
+}
+
 .sidebar[data-collapsed="true"] .sidebarQuickControls {
   display: flex;
+  flex-direction: column;
   justify-content: center;
+  gap: var(--space-sm);
   padding-top: 0;
 }
 
@@ -524,6 +607,7 @@ textarea:focus-visible {
   height: 38px;
   padding: 0;
 }
+
 
 .panelHeader {
   display: flex;
@@ -630,7 +714,7 @@ textarea:focus-visible {
 
 .sidebarTabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-xs);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
@@ -919,6 +1003,10 @@ textarea:focus-visible {
   animation: sessionWorkingRowPulse 1.8s ease-in-out infinite;
 }
 
+.sessionChild[data-icon-picker-open="true"] {
+  z-index: 24;
+}
+
 .sessionChild[data-active="true"] {
   background: var(--color-selected-bg);
   color: var(--color-selected-fg);
@@ -993,6 +1081,10 @@ textarea:focus-visible {
 
 .sessionIconPicker {
   position: relative;
+}
+
+.sessionIconPicker[open] {
+  z-index: 25;
 }
 
 .sessionIconPicker summary {
@@ -1230,13 +1322,6 @@ textarea:focus-visible {
   margin-top: 2px;
 }
 
-.topbarActions {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: var(--space-sm);
-}
-
 .runtimeQuickSelect {
   display: grid;
   gap: 3px;
@@ -1313,25 +1398,6 @@ textarea:focus-visible {
   border-color: var(--color-border-strong);
   color: var(--color-ink);
   background: var(--color-surface-soft);
-}
-
-.statusPill {
-  min-width: 96px;
-  padding: 7px var(--space-md);
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-pill);
-  color: var(--color-muted);
-  background: var(--color-canvas);
-  font-size: 13px;
-  font-weight: 500;
-  text-align: center;
-  text-transform: capitalize;
-}
-
-.statusPill[data-state="connected"] {
-  border-color: var(--color-success-border);
-  color: var(--color-success);
-  background: var(--color-success-soft);
 }
 
 .messages {
@@ -1989,8 +2055,7 @@ textarea:focus-visible {
   display: grid;
   min-width: 0;
   gap: var(--space-sm);
-  width: min(1040px, 100%);
-  margin: 0 auto;
+  width: 100%;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg);
   padding: var(--space-md);
@@ -2442,6 +2507,35 @@ textarea:focus-visible {
   border-radius: var(--radius-sm);
   padding: var(--space-md);
   background: var(--color-canvas);
+}
+
+.soundVolumeControl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: var(--space-md);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  background: var(--color-canvas);
+}
+
+.soundVolumeControl span {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.soundVolumeControl strong {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.soundVolumeControl input[type="range"] {
+  width: 100%;
+  accent-color: var(--color-primary);
 }
 
 .soundFilePicker span {

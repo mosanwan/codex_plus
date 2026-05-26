@@ -38,6 +38,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  RefreshCw,
   Rocket,
   Search,
   Settings,
@@ -57,7 +58,9 @@ import {
   Wifi,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { LocalNotifications } from "@capacitor/local-notifications";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode, RefObject } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -78,6 +81,20 @@ const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
 const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
 const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
 const RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY = "codep.relayDesktopDeviceId";
+const RELAY_LAST_EVENT_ID_STORAGE_KEY = "codep.relayLastEventId";
+const SYSTEM_NOTIFICATIONS_ENABLED_STORAGE_KEY = "codep.systemNotificationsEnabled";
+const NOTIFICATION_VIBRATION_ENABLED_STORAGE_KEY = "codep.notificationVibrationEnabled";
+const NOTIFICATION_SOUND_ENABLED_STORAGE_KEY = "codep.notificationSoundEnabled";
+const NOTIFICATION_SOUND_FILE = "codep_notify.wav";
+const NOTIFICATION_SOUND_RESOURCE = "codep_notify";
+const NOTIFICATION_CHANNEL_PREFIX = "codep_turn_complete";
+const NOTIFICATION_CHANNEL_VERSION = "v2";
+const NOTIFICATION_BODY_MAX_CHARS = 100;
+const PENDING_RELAY_COMMANDS_STORAGE_KEY = "codep.pendingRelayCommands";
+const RELIABLE_RELAY_RETRY_MS = 5000;
+const PENDING_RELAY_COMMAND_MAX_AGE_MS = 120000;
+const RELAY_RECONNECT_BASE_MS = 1000;
+const RELAY_RECONNECT_MAX_MS = 30000;
 const FAVORITE_SESSIONS_STORAGE_KEY = "codep.mobileFavoriteSessions";
 const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.mobileCollapsedWorkspaces";
 const THEME_STORAGE_KEY = "codep.theme";
@@ -120,10 +137,17 @@ const EFFORT_OPTIONS: Array<{
   { value: "xhigh", label: "XHigh", description: "Maximum reasoning depth." }
 ];
 
-type RelayConnectionState = "disabled" | "connecting" | "connected" | "error";
-type SessionTab = "all" | "favorites";
+type RelayConnectionState =
+  | "disabled"
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "error";
+type SessionTab = "all" | "recent" | "favorites";
 type ThemeMode = "dark" | "light";
 type UILanguage = "en" | "zh-CN";
+type ComposerCompletionMode = "file" | "skill";
 
 interface ModelOption {
   id: string;
@@ -153,9 +177,18 @@ const UI_TEXT = {
     sessionsSubtitle: "Workspaces and desktop sessions",
     sessionViews: "Session views",
     all: "All",
+    recent: "Recent",
     favorites: "Favorites",
+    noWorkspaces: "Connect a desktop app to load workspaces.",
     noWorkspaceSessions: "No sessions in this workspace.",
+    recentEmpty: "Recent sessions appear here after workspace history loads.",
     favoriteEmpty: "Star sessions to keep them in this view.",
+    addWorkspace: "Open workspace",
+    workspacePath: "Desktop workspace path",
+    workspacePathPlaceholder: "/home/three/workspace/project",
+    openWorkspaceTitle: "Open workspace",
+    openWorkspaceHelp: "Enter a path that exists on the connected desktop.",
+    closeWorkspaceDialog: "Close workspace dialog",
     expandWorkspace: "Expand {name}",
     collapseWorkspace: "Collapse {name}",
     openWorkspace: "Open workspace {name}",
@@ -184,6 +217,10 @@ const UI_TEXT = {
     fileMention: "File mention",
     files: "Files",
     skills: "Skills",
+    searchFiles: "Search files",
+    searchSkills: "Search skills",
+    noMatchingFiles: "No matching files",
+    noMatchingSkills: "No matching skills",
     messageCodex: "Message Codex",
     composerPlaceholder: "Message Codex on your desktop",
     runtimeSettings: "Runtime settings",
@@ -192,17 +229,26 @@ const UI_TEXT = {
     stopCurrentTurn: "Stop current turn",
     sendMessage: "Send message",
     sentImages: "Sent images",
+    sentAttachments: "Sent attachments",
     mobileSubtitle: "Browser-first remote control shell",
     settingsSubtitle: "Remote access and app preferences",
     connection: "Connection",
     relayEndpoint: "Relay endpoint",
-    desktopDeviceId: "Desktop device ID",
+    desktopDeviceId: "Desktop device",
+    desktopDeviceIdFallback: "Selected device ID",
+    loadingDesktopDevices: "Loading desktop devices...",
+    noDesktopDevices: "No online desktop devices for this API key.",
+    refreshDevices: "Refresh",
+    desktopConnection: "Desktop connection",
+    desktopOnline: "Desktop online",
+    desktopOffline: "Desktop not connected",
     apiKey: "API key",
     relayHelp:
-      "Use the same API key as the desktop app. The endpoint should point to the Go relay server. The desktop device ID must match the desktop Settings dialog.",
+      "Use the same API key as the desktop app. The endpoint should point to the Go relay server. Online desktop devices are listed automatically.",
     relayMode: "Relay mode",
     missingKey: "Missing key",
     desktop: "Desktop",
+    mobileClients: "mobile",
     device: "Device",
     appearance: "Appearance",
     theme: "Theme",
@@ -220,6 +266,11 @@ const UI_TEXT = {
     workspaceBoundary: "Workspace boundary",
     enforced: "Enforced",
     notifications: "Notifications",
+    systemNotifications: "System notifications",
+    notificationVibration: "Vibration",
+    notificationSound: "Sound",
+    notificationsHelp:
+      "When a Codex turn completes, Android can show a system notification with a short session summary while the app is running in the background.",
     notConfigured: "Not configured",
     developer: "Developer",
     androidShell: "Android shell",
@@ -242,8 +293,10 @@ const UI_TEXT = {
     online: "Online",
     pairing: "Pairing",
     offline: "Offline",
+    disconnected: "Disconnected",
     connecting: "Connecting",
     connected: "Connected",
+    reconnecting: "Reconnecting",
     error: "Error",
     disabled: "Disabled",
     approval: "Approval"
@@ -260,9 +313,18 @@ const UI_TEXT = {
     sessionsSubtitle: "工作区与桌面端会话",
     sessionViews: "会话视图",
     all: "全部",
+    recent: "最近",
     favorites: "收藏",
+    noWorkspaces: "连接桌面端后会加载工作区。",
     noWorkspaceSessions: "这个工作区还没有会话。",
+    recentEmpty: "加载工作区历史后，最近使用的 Session 会显示在这里。",
     favoriteEmpty: "收藏常用会话后，会显示在这里。",
+    addWorkspace: "打开工作区",
+    workspacePath: "桌面端工作区路径",
+    workspacePathPlaceholder: "/home/three/workspace/project",
+    openWorkspaceTitle: "打开工作区",
+    openWorkspaceHelp: "输入连接的桌面端上存在的路径。",
+    closeWorkspaceDialog: "关闭工作区弹窗",
     expandWorkspace: "展开 {name}",
     collapseWorkspace: "折叠 {name}",
     openWorkspace: "打开工作区 {name}",
@@ -291,6 +353,10 @@ const UI_TEXT = {
     fileMention: "文件提示",
     files: "文件",
     skills: "技能",
+    searchFiles: "搜索文件",
+    searchSkills: "搜索技能",
+    noMatchingFiles: "没有匹配的文件",
+    noMatchingSkills: "没有匹配的技能",
     messageCodex: "给 Codex 发消息",
     composerPlaceholder: "在桌面端向 Codex 发消息",
     runtimeSettings: "运行设置",
@@ -299,17 +365,26 @@ const UI_TEXT = {
     stopCurrentTurn: "停止当前 Turn",
     sendMessage: "发送消息",
     sentImages: "已发送图片",
+    sentAttachments: "已发送附件",
     mobileSubtitle: "浏览器优先的远程控制界面",
     settingsSubtitle: "远程连接与应用偏好",
     connection: "连接",
     relayEndpoint: "Relay endpoint",
-    desktopDeviceId: "桌面端 Device ID",
+    desktopDeviceId: "桌面端设备",
+    desktopDeviceIdFallback: "当前选中的设备 ID",
+    loadingDesktopDevices: "正在加载桌面端设备...",
+    noDesktopDevices: "这个 API key 下没有在线桌面端设备。",
+    refreshDevices: "刷新",
+    desktopConnection: "桌面端连接",
+    desktopOnline: "桌面端在线",
+    desktopOffline: "桌面端未连接",
     apiKey: "API key",
     relayHelp:
-      "使用与桌面端相同的 API key。Endpoint 指向 Go relay 服务，桌面端 Device ID 必须与桌面设置中的值一致。",
+      "使用与桌面端相同的 API key。Endpoint 指向 Go relay 服务，在线桌面端设备会自动列出。",
     relayMode: "Relay 模式",
     missingKey: "缺少 key",
     desktop: "桌面端",
+    mobileClients: "移动端",
     device: "本机",
     appearance: "外观",
     theme: "主题",
@@ -327,6 +402,11 @@ const UI_TEXT = {
     workspaceBoundary: "工作区边界",
     enforced: "已限制",
     notifications: "通知",
+    systemNotifications: "系统通知",
+    notificationVibration: "振动",
+    notificationSound: "提示音",
+    notificationsHelp:
+      "Codex Turn 完成时，Android 可以发出系统通知，并附上简要的 Session 说明；App 在后台运行时也会提示。",
     notConfigured: "未配置",
     developer: "开发",
     androidShell: "Android 壳",
@@ -349,8 +429,10 @@ const UI_TEXT = {
     online: "在线",
     pairing: "配对中",
     offline: "离线",
+    disconnected: "断开",
     connecting: "连接中",
     connected: "已连接",
+    reconnecting: "正在重连",
     error: "错误",
     disabled: "未启用",
     approval: "待审批"
@@ -428,7 +510,43 @@ interface DesktopSnapshotPayload {
 
 interface RelayEnvelope {
   type: string;
-  payload?: DesktopSnapshotPayload;
+  payload?: unknown;
+}
+
+interface RelayDesktopDevice {
+  deviceId: string;
+  desktopCount: number;
+  clientCount: number;
+  connected: boolean;
+  lastSeen: string;
+}
+
+interface RelayPresence {
+  deviceId: string;
+  desktopCount: number;
+  clientCount: number;
+  connected: boolean;
+  lastSeen: string;
+}
+
+interface PendingRelayCommand {
+  id: string;
+  message: {
+    type: string;
+    payload: Record<string, unknown>;
+  };
+  createdAt: number;
+}
+
+interface RelayEventRecord {
+  id: number;
+  type: string;
+  workspace_id?: string;
+  session_id?: string;
+  title?: string;
+  body?: string;
+  payload?: Record<string, unknown>;
+  created_at?: string;
 }
 
 interface PendingImageAttachment {
@@ -437,6 +555,42 @@ interface PendingImageAttachment {
   name: string;
   mimeType: string;
   dataUrl: string;
+}
+
+interface PendingMentionAttachment {
+  id: string;
+  kind: "mention";
+  name: string;
+  path: string;
+}
+
+type PendingComposerAttachment = PendingImageAttachment | PendingMentionAttachment;
+
+interface ComposerSuggestion {
+  id: string;
+  type: ComposerCompletionMode;
+  label: string;
+  name: string;
+  detail?: string;
+  insertText: string;
+  path?: string;
+}
+
+interface ComposerCompletion {
+  mode: ComposerCompletionMode;
+  query: string;
+  tokenStart: number;
+  cursor: number;
+  items: ComposerSuggestion[];
+  selectedIndex: number;
+  loading: boolean;
+  requestId: string;
+}
+
+interface TurnCompleteNotificationSettings {
+  enabled: boolean;
+  sound: boolean;
+  vibration: boolean;
 }
 
 export function App() {
@@ -450,9 +604,7 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(
     mockSnapshot.activeSessionId
   );
-  const [sessionTab, setSessionTab] = useState<SessionTab>(() =>
-    readStringList(FAVORITE_SESSIONS_STORAGE_KEY).length > 0 ? "favorites" : "all"
-  );
+  const [sessionTab, setSessionTab] = useState<SessionTab>("recent");
   const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
     () => new Set(readStringList(FAVORITE_SESSIONS_STORAGE_KEY))
   );
@@ -460,9 +612,13 @@ export function App() {
     () => new Set(readStringList(COLLAPSED_WORKSPACES_STORAGE_KEY))
   );
   const [composer, setComposer] = useState("");
-  const [pendingAttachments, setPendingAttachments] = useState<PendingImageAttachment[]>(
-    []
-  );
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingComposerAttachment[]
+  >([]);
+  const [composerCompletion, setComposerCompletion] =
+    useState<ComposerCompletion | null>(null);
+  const [isWorkspaceDialogOpen, setIsWorkspaceDialogOpen] = useState(false);
+  const [workspacePathDraft, setWorkspacePathDraft] = useState("");
   const [messages, setMessages] = useState(mockSnapshot.messages);
   const [approvals, setApprovals] = useState(mockSnapshot.approvals);
   const [diffLines, setDiffLines] = useState(mockSnapshot.diffLines);
@@ -501,12 +657,37 @@ export function App() {
     () => window.localStorage.getItem(RELAY_API_KEY_STORAGE_KEY) ?? ""
   );
   const [desktopDeviceId, setDesktopDeviceId] = useState(
-    () => window.localStorage.getItem(RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY) ?? "desktop-main"
+    () => window.localStorage.getItem(RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY) ?? ""
+  );
+  const [desktopDevices, setDesktopDevices] = useState<RelayDesktopDevice[]>([]);
+  const [isDesktopDevicesLoading, setIsDesktopDevicesLoading] = useState(false);
+  const [desktopDevicesError, setDesktopDevicesError] = useState("");
+  const [desktopDevicesRefreshKey, setDesktopDevicesRefreshKey] = useState(0);
+  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(() =>
+    readBooleanStorage(SYSTEM_NOTIFICATIONS_ENABLED_STORAGE_KEY, true)
+  );
+  const [notificationVibrationEnabled, setNotificationVibrationEnabled] = useState(() =>
+    readBooleanStorage(NOTIFICATION_VIBRATION_ENABLED_STORAGE_KEY, true)
+  );
+  const [notificationSoundEnabled, setNotificationSoundEnabled] = useState(() =>
+    readBooleanStorage(NOTIFICATION_SOUND_ENABLED_STORAGE_KEY, true)
   );
   const [relayState, setRelayState] = useState<RelayConnectionState>("disabled");
   const [relayError, setRelayError] = useState("");
+  const [relayPresence, setRelayPresence] = useState<RelayPresence | null>(null);
   const [deviceId] = useState(() => storedDeviceId());
   const relaySocketRef = useRef<WebSocket | null>(null);
+  const activeSessionIdRef = useRef(activeSessionId);
+  const lastRelayEventIdRef = useRef(readLastRelayEventId());
+  const pendingRelayCommandsRef = useRef<Record<string, PendingRelayCommand>>(
+    readPendingRelayCommands()
+  );
+  const composerCompletionRequestRef = useRef(0);
+  const notificationSettingsRef = useRef({
+    enabled: systemNotificationsEnabled,
+    sound: notificationSoundEnabled,
+    vibration: notificationVibrationEnabled
+  });
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const previousHistoryScrollHeight = useRef(0);
@@ -525,12 +706,45 @@ export function App() {
       }
     ];
   }, [device.workspace, sessions, workspaces]);
+  useEffect(() => {
+    setSessionTab("recent");
+  }, []);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+  useEffect(() => {
+    notificationSettingsRef.current = {
+      enabled: systemNotificationsEnabled,
+      sound: notificationSoundEnabled,
+      vibration: notificationVibrationEnabled
+    };
+  }, [
+    notificationSoundEnabled,
+    notificationVibrationEnabled,
+    systemNotificationsEnabled
+  ]);
+  useEffect(() => {
+    if (!systemNotificationsEnabled) {
+      return;
+    }
+    void ensureTurnCompleteNotificationReady({
+      sound: notificationSoundEnabled,
+      vibration: notificationVibrationEnabled
+    });
+  }, [
+    notificationSoundEnabled,
+    notificationVibrationEnabled,
+    systemNotificationsEnabled
+  ]);
   const activeSession =
     visibleWorkspaces
       .flatMap(workspace => workspace.sessions)
       .find(session => session.id === activeSessionId) ??
     sessions.find(session => session.id === activeSessionId) ??
     sessions[0];
+  const hasUnreadSessions = visibleWorkspaces.some(workspace =>
+    workspace.sessions.some(session => session.unread)
+  );
   const displayMessages = useMemo(
     () => messages.filter(message => !isHiddenChatMessage(message)),
     [messages]
@@ -572,54 +786,231 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const interval = window.setInterval(() => {
+      flushPendingRelayCommands();
+    }, RELIABLE_RELAY_RETRY_MS);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!composerCompletion) {
+      return undefined;
+    }
+
+    const { mode, query, requestId } = composerCompletion;
+    const timer = window.setTimeout(() => {
+      publishRelay({
+        type: "client.search_composer",
+        payload: {
+          requestId,
+          mode,
+          query,
+          workspace: activeWorkspace ?? "",
+          limit: 36
+        }
+      });
+    }, 90);
+
+    return () => window.clearTimeout(timer);
+  }, [activeWorkspace, composerCompletion?.mode, composerCompletion?.query, composerCompletion?.requestId]);
+
+  useEffect(() => {
     if (!relayEndpoint.trim() || !relayApiKey.trim()) {
+      setDesktopDevices([]);
+      setIsDesktopDevicesLoading(false);
+      setDesktopDevicesError("");
+      return undefined;
+    }
+
+    const devicesUrl = relayDevicesURL(relayEndpoint);
+    if (!devicesUrl) {
+      setDesktopDevices([]);
+      setIsDesktopDevicesLoading(false);
+      setDesktopDevicesError(`Invalid relay endpoint: ${relayEndpoint}`);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setIsDesktopDevicesLoading(true);
+    setDesktopDevicesError("");
+
+    fetch(devicesUrl, {
+      headers: {
+        "X-CodeP-Api-Key": relayApiKey.trim()
+      }
+    })
+      .then(async response => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(errorMessageFromBody(body) || `HTTP ${response.status}`);
+        }
+        return relayDesktopDevicesFromPayload(body);
+      })
+      .then(devices => {
+        if (cancelled) {
+          return;
+        }
+        setDesktopDevices(devices);
+        if (devices.length === 0 && desktopDeviceId === "desktop-main") {
+          setDesktopDeviceId("");
+          window.localStorage.removeItem(RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY);
+          return;
+        }
+        const selectedStillAvailable = devices.some(
+          device => device.deviceId === desktopDeviceId
+        );
+        const preferred = devices.find(device => device.connected) ?? devices[0];
+        if (preferred && (!selectedStillAvailable || desktopDeviceId === "desktop-main")) {
+          setDesktopDeviceId(preferred.deviceId);
+          window.localStorage.setItem(RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY, preferred.deviceId);
+        }
+      })
+      .catch(error => {
+        if (cancelled) {
+          return;
+        }
+        setDesktopDevices([]);
+        setDesktopDevicesError(
+          error instanceof Error ? error.message : "Unable to load desktop devices."
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsDesktopDevicesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopDeviceId, desktopDevicesRefreshKey, relayApiKey, relayEndpoint]);
+
+  useEffect(() => {
+    if (!relayEndpoint.trim() || !relayApiKey.trim() || !desktopDeviceId.trim()) {
       relaySocketRef.current?.close();
       relaySocketRef.current = null;
       setRelayState("disabled");
       setRelayError("");
+      setRelayPresence(null);
       return undefined;
     }
 
-    const relayUrl = relayWebSocketURL(relayEndpoint, "client", desktopDeviceId, relayApiKey);
+    const relayUrl = relayWebSocketURL(
+      relayEndpoint,
+      "client",
+      desktopDeviceId,
+      relayApiKey,
+      deviceId
+    );
     if (!relayUrl) {
       relaySocketRef.current?.close();
       relaySocketRef.current = null;
       setRelayState("error");
       setRelayError(`Invalid relay endpoint: ${relayEndpoint}`);
+      setRelayPresence(null);
       return undefined;
     }
 
-    setRelayState("connecting");
-    setRelayError("");
-    const socket = new WebSocket(relayUrl);
-    relaySocketRef.current = socket;
+    let stopped = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: number | null = null;
 
-    socket.addEventListener("open", () => {
-      setRelayState("connected");
-      setRelayError("");
-    });
-    socket.addEventListener("message", event => {
-      applyRelayMessage(event.data);
-    });
-    socket.addEventListener("close", () => {
-      if (relaySocketRef.current === socket) {
-        relaySocketRef.current = null;
-        setRelayState("error");
-        setRelayError(`Relay connection closed: ${relayUrl}`);
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
-    });
-    socket.addEventListener("error", () => {
-      setRelayState("error");
-      setRelayError(`Relay connection failed: ${relayUrl}`);
-    });
+    };
+
+    const scheduleReconnect = (reason: string) => {
+      if (stopped || reconnectTimer !== null) {
+        return;
+      }
+      const delay = Math.min(
+        RELAY_RECONNECT_MAX_MS,
+        RELAY_RECONNECT_BASE_MS * 2 ** reconnectAttempt
+      );
+      reconnectAttempt += 1;
+      setRelayState("reconnecting");
+      setRelayError(`${reason}. Reconnecting in ${Math.ceil(delay / 1000)}s.`);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+
+    const connect = () => {
+      clearReconnectTimer();
+      if (stopped) {
+        return;
+      }
+
+      setRelayState("connecting");
+      if (reconnectAttempt === 0) {
+        setRelayError("");
+      }
+      const socket = new WebSocket(relayUrl);
+      relaySocketRef.current = socket;
+
+      socket.addEventListener("open", () => {
+        if (relaySocketRef.current !== socket || stopped) {
+          return;
+        }
+        reconnectAttempt = 0;
+        setRelayState("connected");
+        setRelayError("");
+        setRelayPresence(null);
+        flushPendingRelayCommands();
+        publishRelay({
+          type: "client.resume_events",
+          payload: { last_event_id: lastRelayEventIdRef.current }
+        });
+      });
+      socket.addEventListener("message", event => {
+        if (relaySocketRef.current === socket && !stopped) {
+          applyRelayMessage(event.data);
+        }
+      });
+      socket.addEventListener("close", () => {
+        if (relaySocketRef.current === socket) {
+          relaySocketRef.current = null;
+          setRelayPresence(null);
+          scheduleReconnect(`Relay connection closed: ${relayUrl}`);
+        }
+      });
+      socket.addEventListener("error", () => {
+        if (relaySocketRef.current === socket) {
+          scheduleReconnect(`Relay connection failed: ${relayUrl}`);
+          socket.close();
+        }
+      });
+    };
+
+    const reconnectNow = () => {
+      if (stopped) {
+        return;
+      }
+      clearReconnectTimer();
+      const socket = relaySocketRef.current;
+      if (!socket || socket.readyState === WebSocket.CLOSED) {
+        reconnectAttempt = 0;
+        connect();
+      }
+    };
+
+    window.addEventListener("online", reconnectNow);
+    connect();
 
     return () => {
-      if (relaySocketRef.current === socket) {
-        relaySocketRef.current = null;
-      }
-      socket.close();
+      stopped = true;
+      clearReconnectTimer();
+      window.removeEventListener("online", reconnectNow);
+      const socket = relaySocketRef.current;
+      relaySocketRef.current = null;
+      setRelayPresence(null);
+      socket?.close();
     };
-  }, [desktopDeviceId, relayApiKey, relayEndpoint]);
+  }, [desktopDeviceId, deviceId, relayApiKey, relayEndpoint]);
 
   useEffect(() => {
     resetVisibleMessageWindow();
@@ -701,20 +1092,31 @@ export function App() {
     if (text.length === 0 && outgoingAttachments.length === 0) {
       return;
     }
+    const targetSessionId = activeSessionIdRef.current ?? activeSession?.id ?? "";
+    if (!targetSessionId || isSessionLoading) {
+      setDesktopStatus(t("resumingSession"));
+      return;
+    }
+    const targetWorkspace =
+      activeWorkspace ??
+      (targetSessionId ? workspaceForSession(visibleWorkspaces, targetSessionId)?.path : null) ??
+      "";
 
     setMessages(previous => [
       ...previous,
       {
         id: `local-${Date.now()}`,
         role: "user",
-        text: text.length > 0 ? text : t("sentImages"),
-        attachments: outgoingAttachments.map(attachment => ({
-          id: attachment.id,
-          kind: attachment.kind,
-          name: attachment.name,
-          mimeType: attachment.mimeType,
-          dataUrl: attachment.dataUrl
-        }))
+        text: text.length > 0 ? text : t("sentAttachments"),
+        attachments: outgoingAttachments
+          .filter((attachment): attachment is PendingImageAttachment => attachment.kind === "image")
+          .map(attachment => ({
+            id: attachment.id,
+            kind: attachment.kind,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            dataUrl: attachment.dataUrl
+          }))
       }
     ]);
     setComposer("");
@@ -723,17 +1125,24 @@ export function App() {
     setActiveView("chat");
     resetVisibleMessageWindow();
     requestScrollToBottom();
-    publishRelay({
-      type: "client.send_message",
-      payload: {
-        text,
-        attachments: outgoingAttachments.map(({ kind, name, mimeType, dataUrl }) => ({
-          kind,
-          name,
-          mimeType,
-          dataUrl
-        }))
-      }
+    publishReliableRelayCommand("client.send_message", {
+      workspace: targetWorkspace,
+      sessionId: targetSessionId,
+      text,
+      attachments: outgoingAttachments.map(attachment =>
+        attachment.kind === "image"
+          ? {
+              kind: attachment.kind,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              dataUrl: attachment.dataUrl
+            }
+          : {
+              kind: attachment.kind,
+              name: attachment.name,
+              path: attachment.path
+            }
+      )
     });
   }
 
@@ -762,34 +1171,154 @@ export function App() {
     setPendingAttachments(previous => previous.filter(attachment => attachment.id !== id));
   }
 
+  function handleComposerChange(value: string, cursor: number) {
+    setComposer(value);
+    updateComposerCompletion(value, cursor);
+  }
+
+  function updateComposerCompletion(value: string, cursor: number) {
+    const trigger = activeComposerTrigger(value, cursor);
+    if (!trigger || !activeSession) {
+      setComposerCompletion(null);
+      return;
+    }
+
+    setComposerCompletion(current => {
+      const requestId =
+        current?.mode === trigger.mode && current.query === trigger.query
+          ? current.requestId
+          : `completion-${Date.now()}-${++composerCompletionRequestRef.current}`;
+      return {
+        mode: trigger.mode,
+        query: trigger.query,
+        tokenStart: trigger.tokenStart,
+        cursor,
+        items:
+          current?.mode === trigger.mode && current.query === trigger.query
+            ? current.items
+            : [],
+        selectedIndex:
+          current?.mode === trigger.mode && current.query === trigger.query
+            ? current.selectedIndex
+            : 0,
+        loading: true,
+        requestId
+      };
+    });
+  }
+
+  function openComposerCompletion(mode: ComposerCompletionMode, cursor: number) {
+    if (!activeSession) {
+      return;
+    }
+    setComposerCompletion({
+      mode,
+      query: "",
+      tokenStart: cursor,
+      cursor,
+      items: [],
+      selectedIndex: 0,
+      loading: true,
+      requestId: `completion-${Date.now()}-${++composerCompletionRequestRef.current}`
+    });
+  }
+
+  function closeComposerCompletion() {
+    setComposerCompletion(null);
+  }
+
+  function moveComposerCompletionSelection(direction: 1 | -1) {
+    setComposerCompletion(current => {
+      if (!current || current.items.length === 0) {
+        return current;
+      }
+      return {
+        ...current,
+        selectedIndex:
+          (current.selectedIndex + direction + current.items.length) %
+          current.items.length
+      };
+    });
+  }
+
+  function selectComposerCompletion(item: ComposerSuggestion) {
+    if (!composerCompletion) {
+      return;
+    }
+
+    const suffix = composer.slice(composerCompletion.cursor);
+    const insertText = `${item.insertText} `;
+    const nextComposer = `${composer.slice(0, composerCompletion.tokenStart)}${insertText}${suffix}`;
+    setComposer(nextComposer);
+    setComposerCompletion(null);
+
+    const mentionPath = item.type === "file" ? item.path : undefined;
+    if (mentionPath) {
+      setPendingAttachments(previous => {
+        if (
+          previous.some(
+            attachment =>
+              attachment.kind === "mention" && attachment.path === mentionPath
+          )
+        ) {
+          return previous;
+        }
+        return [
+          ...previous,
+          {
+            id: `${mentionPath}-${Date.now()}`,
+            kind: "mention",
+            name: item.name,
+            path: mentionPath
+          }
+        ];
+      });
+    }
+  }
+
   function interruptDesktop() {
     setIsWorking(false);
-    publishRelay({ type: "client.interrupt" });
+    publishReliableRelayCommand("client.interrupt");
   }
 
   function openSession(sessionId: string) {
     const targetWorkspace = workspaceForSession(visibleWorkspaces, sessionId);
+    activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
+    markSessionRead(sessionId);
     setMessages([]);
     setIsSessionLoading(true);
     if (targetWorkspace) {
       setActiveWorkspace(targetWorkspace.path);
-      publishRelay({
-        type: "client.open_session",
-        payload: { workspace: targetWorkspace.path, sessionId }
+      publishReliableRelayCommand("client.open_session", {
+        workspace: targetWorkspace.path,
+        sessionId
       });
     }
     setActiveView("chat");
+  }
+
+  function markSessionRead(sessionId: string) {
+    setWorkspaces(previous =>
+      previous.map(workspace => ({
+        ...workspace,
+        sessions: workspace.sessions.map(session =>
+          session.id === sessionId ? { ...session, unread: false } : session
+        )
+      }))
+    );
+    setSessions(previous =>
+      previous.map(session =>
+        session.id === sessionId ? { ...session, unread: false } : session
+      )
+    );
   }
 
   function startSessionInWorkspace(workspace: string) {
     setActiveWorkspace(workspace);
     setMessages([]);
     setIsSessionLoading(true);
-    publishRelay({
-      type: "client.new_session",
-      payload: { workspace }
-    });
+    publishReliableRelayCommand("client.new_session", { workspace });
     setActiveView("chat");
   }
 
@@ -798,11 +1327,24 @@ export function App() {
     setActiveSessionId(null);
     setMessages([]);
     setApprovals([]);
-    setIsSessionLoading(false);
-    publishRelay({
-      type: "client.open_workspace",
-      payload: { workspace }
-    });
+    setIsSessionLoading(true);
+    publishReliableRelayCommand("client.open_workspace", { workspace });
+    setActiveView("chat");
+  }
+
+  function openWorkspacePath(path: string) {
+    const workspace = path.trim();
+    if (!workspace) {
+      return;
+    }
+    setIsWorkspaceDialogOpen(false);
+    setWorkspacePathDraft("");
+    setActiveWorkspace(workspace);
+    setActiveSessionId(null);
+    setMessages([]);
+    setApprovals([]);
+    setIsSessionLoading(true);
+    publishReliableRelayCommand("client.open_workspace_path", { workspace });
     setActiveView("chat");
   }
 
@@ -829,9 +1371,10 @@ export function App() {
         existing.id === session.id ? { ...existing, title } : existing
       )
     );
-    publishRelay({
-      type: "client.rename_session",
-      payload: { workspace, sessionId: session.id, title }
+    publishReliableRelayCommand("client.rename_session", {
+      workspace,
+      sessionId: session.id,
+      title
     });
   }
 
@@ -847,10 +1390,7 @@ export function App() {
     setSessions(previous =>
       previous.map(session => (session.id === sessionId ? { ...session, iconId } : session))
     );
-    publishRelay({
-      type: "client.set_session_icon",
-      payload: { sessionId, iconId }
-    });
+    publishReliableRelayCommand("client.set_session_icon", { sessionId, iconId });
   }
 
   function toggleFavoriteSession(sessionId: string) {
@@ -881,9 +1421,9 @@ export function App() {
 
   function resolveApproval(approvalId: string, decision: "accept" | "decline") {
     setApprovals(previous => previous.filter(item => item.id !== approvalId));
-    publishRelay({
-      type: "client.resolve_approval",
-      payload: { requestId: approvalId, decision }
+    publishReliableRelayCommand("client.resolve_approval", {
+      requestId: approvalId,
+      decision
     });
   }
 
@@ -905,10 +1445,7 @@ export function App() {
 
   function updatePermissionMode(value: PermissionMode) {
     setPermissionMode(value);
-    publishRelay({
-      type: "client.set_permissions",
-      payload: { permissionMode: value }
-    });
+    publishReliableRelayCommand("client.set_permissions", { permissionMode: value });
   }
 
   function updateModel(value: string) {
@@ -917,18 +1454,15 @@ export function App() {
       return;
     }
     setModel(nextModel);
-    publishRelay({
-      type: "client.set_model",
-      payload: { model: nextModel, effort: modelEffort }
+    publishReliableRelayCommand("client.set_model", {
+      model: nextModel,
+      effort: modelEffort
     });
   }
 
   function updateModelEffort(value: ModelEffort) {
     setModelEffort(value);
-    publishRelay({
-      type: "client.set_model",
-      payload: { model, effort: value }
-    });
+    publishReliableRelayCommand("client.set_model", { model, effort: value });
   }
 
   function updateThemeMode(value: ThemeMode) {
@@ -941,12 +1475,120 @@ export function App() {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, value);
   }
 
+  function updateSystemNotificationsEnabled(value: boolean) {
+    setSystemNotificationsEnabled(value);
+    writeBooleanStorage(SYSTEM_NOTIFICATIONS_ENABLED_STORAGE_KEY, value);
+    if (value) {
+      void ensureTurnCompleteNotificationReady({
+        sound: notificationSoundEnabled,
+        vibration: notificationVibrationEnabled
+      });
+    }
+  }
+
+  function updateNotificationVibrationEnabled(value: boolean) {
+    setNotificationVibrationEnabled(value);
+    writeBooleanStorage(NOTIFICATION_VIBRATION_ENABLED_STORAGE_KEY, value);
+    if (systemNotificationsEnabled) {
+      void ensureTurnCompleteNotificationReady({
+        sound: notificationSoundEnabled,
+        vibration: value
+      });
+    }
+  }
+
+  function updateNotificationSoundEnabled(value: boolean) {
+    setNotificationSoundEnabled(value);
+    writeBooleanStorage(NOTIFICATION_SOUND_ENABLED_STORAGE_KEY, value);
+    if (systemNotificationsEnabled) {
+      void ensureTurnCompleteNotificationReady({
+        sound: value,
+        vibration: notificationVibrationEnabled
+      });
+    }
+  }
+
   function applyRelayMessage(data: unknown) {
     const envelope = parseRelayEnvelope(data);
-    if (!envelope || envelope.type !== "desktop.snapshot" || !envelope.payload) {
+    if (!envelope) {
       return;
     }
-    const snapshot = envelope.payload;
+
+    if (envelope.type === "client.command_ack") {
+      const id = clientCommandAckId(envelope.payload);
+      if (id) {
+        forgetPendingRelayCommand(id);
+      }
+      return;
+    }
+
+    if (envelope.type === "relay.presence") {
+      const presence = relayPresenceFromPayload(envelope.payload);
+      setRelayPresence(presence);
+      setDesktopDevices(previous =>
+        previous.map(device =>
+          device.deviceId === presence.deviceId
+            ? {
+                ...device,
+                desktopCount: presence.desktopCount,
+                clientCount: presence.clientCount,
+                connected: presence.connected,
+                lastSeen: presence.lastSeen
+              }
+            : device
+        )
+      );
+      return;
+    }
+
+    if (envelope.type === "event.deliver") {
+      const event = relayEventFromPayload(envelope.payload);
+      if (event) {
+        handleRelayEvent(event);
+      }
+      return;
+    }
+
+    if (envelope.type === "event.backlog") {
+      const backlogEvents = relayEventsFromBacklog(envelope.payload);
+      for (const event of backlogEvents) {
+        handleRelayEvent(event);
+      }
+      if (backlogEvents.length > 0) {
+        publishRelay({
+          type: "client.resume_events",
+          payload: { last_event_id: lastRelayEventIdRef.current }
+        });
+      }
+      return;
+    }
+
+    if (envelope.type === "desktop.composer_suggestions") {
+      const payload = asRecord(envelope.payload);
+      const requestId =
+        typeof payload.requestId === "string" ? payload.requestId : "";
+      const items = composerSuggestionsFromPayload(payload.items);
+      setComposerCompletion(current => {
+        if (!current || current.requestId !== requestId) {
+          return current;
+        }
+        return {
+          ...current,
+          items,
+          selectedIndex: Math.min(current.selectedIndex, Math.max(items.length - 1, 0)),
+          loading: false
+        };
+      });
+      return;
+    }
+
+    if (envelope.type !== "desktop.snapshot" || !envelope.payload) {
+      return;
+    }
+    applyDesktopSnapshot(envelope.payload as DesktopSnapshotPayload);
+  }
+
+  function applyDesktopSnapshot(snapshot: DesktopSnapshotPayload) {
     if (snapshot.device) {
       setDevice(snapshot.device);
     }
@@ -960,6 +1602,7 @@ export function App() {
       setSessions(snapshot.sessions);
     }
     if (snapshot.activeSessionId !== undefined) {
+      activeSessionIdRef.current = snapshot.activeSessionId;
       setActiveSessionId(snapshot.activeSessionId);
     }
     if (snapshot.messages) {
@@ -998,7 +1641,130 @@ export function App() {
     }
   }
 
+  function handleRelayEvent(event: RelayEventRecord) {
+    if (!Number.isFinite(event.id) || event.id <= 0) {
+      return;
+    }
+
+    const alreadyProcessed = event.id <= lastRelayEventIdRef.current;
+    if (!alreadyProcessed && event.type === "desktop.snapshot") {
+      const snapshot = snapshotFromRelayEvent(event);
+      if (snapshot) {
+        applyDesktopSnapshot(snapshot);
+      }
+    }
+    if (!alreadyProcessed && event.type === "turn.completed") {
+      const sessionId = event.session_id ?? "";
+      const activeRelaySessionId = activeSessionIdRef.current;
+      void notifyTurnCompleted(event, notificationSettingsRef.current);
+      const payload = asRecord(event.payload);
+      const durationMs =
+        typeof payload.duration_ms === "number" ? payload.duration_ms : null;
+      if (sessionId) {
+        setWorkspaces(previous =>
+          previous.map(workspace => ({
+            ...workspace,
+            sessions: workspace.sessions.map(session =>
+              session.id === sessionId
+                ? {
+                    ...session,
+                    status: "ready",
+                    unread: session.id !== activeRelaySessionId,
+                    lastTurnDurationMs: durationMs ?? session.lastTurnDurationMs ?? null,
+                    turnStartedAt: null
+                  }
+                : session
+            )
+          }))
+        );
+        setSessions(previous =>
+          previous.map(session =>
+            session.id === sessionId
+              ? {
+                  ...session,
+                  status: "ready",
+                  unread: session.id !== activeRelaySessionId,
+                  lastTurnDurationMs: durationMs ?? session.lastTurnDurationMs ?? null,
+                  turnStartedAt: null
+                }
+              : session
+          )
+        );
+      }
+      if (sessionId && sessionId === activeRelaySessionId) {
+        setIsWorking(false);
+        setDesktopStatus(event.body || event.title || "Turn completed.");
+      }
+    }
+
+    lastRelayEventIdRef.current = rememberRelayEventId(
+      lastRelayEventIdRef.current,
+      event.id
+    );
+    publishRelay({
+      type: "event.ack",
+      payload: { last_event_id: lastRelayEventIdRef.current }
+    });
+  }
+
   function publishRelay(message: { type: string; payload?: Record<string, unknown> }) {
+    sendRelayMessage(message);
+  }
+
+  function publishReliableRelayCommand(type: string, payload: Record<string, unknown> = {}) {
+    prunePendingRelayCommands();
+    const id = `${deviceId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    const message = {
+      type,
+      payload: {
+        ...payload,
+        client_message_id: id
+      }
+    };
+    pendingRelayCommandsRef.current = {
+      ...pendingRelayCommandsRef.current,
+      [id]: {
+        id,
+        message,
+        createdAt: Date.now()
+      }
+    };
+    writePendingRelayCommands(pendingRelayCommandsRef.current);
+    sendRelayMessage(message);
+  }
+
+  function flushPendingRelayCommands() {
+    prunePendingRelayCommands();
+    for (const pending of Object.values(pendingRelayCommandsRef.current)) {
+      sendRelayMessage(pending.message);
+    }
+  }
+
+  function prunePendingRelayCommands() {
+    const now = Date.now();
+    const next = Object.fromEntries(
+      Object.entries(pendingRelayCommandsRef.current).filter(([, pending]) => {
+        return now - pending.createdAt <= PENDING_RELAY_COMMAND_MAX_AGE_MS;
+      })
+    );
+    if (Object.keys(next).length === Object.keys(pendingRelayCommandsRef.current).length) {
+      return;
+    }
+    pendingRelayCommandsRef.current = next;
+    writePendingRelayCommands(next);
+  }
+
+  function forgetPendingRelayCommand(id: string) {
+    if (!pendingRelayCommandsRef.current[id]) {
+      return;
+    }
+    const next = { ...pendingRelayCommandsRef.current };
+    delete next[id];
+    pendingRelayCommandsRef.current = next;
+    writePendingRelayCommands(next);
+  }
+
+  function sendRelayMessage(message: { type: string; payload?: Record<string, unknown> }) {
     const socket = relaySocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return;
@@ -1022,11 +1788,33 @@ export function App() {
           t={t}
         />
       ) : null}
+      {isWorkspaceDialogOpen ? (
+        <WorkspacePathModal
+          onClose={() => setIsWorkspaceDialogOpen(false)}
+          onOpen={openWorkspacePath}
+          onPathChange={setWorkspacePathDraft}
+          path={workspacePathDraft}
+          t={t}
+        />
+      ) : null}
 
       <section className="pageViewport" aria-live="polite">
         {activeView === "sessions" ? (
           <div className="pageFrame">
-            <PageHeader title={t("sessions")} subtitle={t("sessionsSubtitle")} />
+            <PageHeader
+              action={
+                <button
+                  aria-label={t("addWorkspace")}
+                  className="headerSettingsButton"
+                  type="button"
+                  onClick={() => setIsWorkspaceDialogOpen(true)}
+                >
+                  <FolderOpen size={18} />
+                </button>
+              }
+              title={t("sessions")}
+              subtitle={t("sessionsSubtitle")}
+            />
             <SessionsPage
               activeSessionId={activeSessionId}
               activeWorkspace={activeWorkspace}
@@ -1050,14 +1838,22 @@ export function App() {
           <div className="pageFrame">
             <PageHeader
               action={
-                <button
-                  aria-label={t("runtimeSettingsTitle")}
-                  className="headerSettingsButton"
-                  type="button"
-                  onClick={() => setIsRuntimeSettingsOpen(true)}
-                >
-                  <Settings size={18} />
-                </button>
+                <>
+	                  <RelayHeaderStatus
+	                    language={language}
+	                    relayError={relayError}
+	                    relayPresence={relayPresence}
+	                    relayState={relayState}
+	                  />
+                  <button
+                    aria-label={t("runtimeSettingsTitle")}
+                    className="headerSettingsButton"
+                    type="button"
+                    onClick={() => setIsRuntimeSettingsOpen(true)}
+                  >
+                    <Settings size={18} />
+                  </button>
+                </>
               }
               subtitle={headerRuntimeValues.join(" · ")}
               title={activeSession?.title ?? t("chat")}
@@ -1065,6 +1861,7 @@ export function App() {
             <ChatPage
               approvals={approvals}
               composer={composer}
+              composerCompletion={composerCompletion}
               desktopStatus={visibleDesktopStatus(desktopStatus)}
               hiddenMessageCount={hiddenMessageCount}
               isSessionLoading={isSessionLoading}
@@ -1072,10 +1869,14 @@ export function App() {
               messages={visibleMessages}
               messagesRef={messageListRef}
               onAddImages={addImageAttachments}
-              onComposerChange={setComposer}
+              onCloseComposerCompletion={closeComposerCompletion}
+              onComposerChange={handleComposerChange}
               onLoadOlderMessages={loadOlderMessages}
+              onMoveComposerCompletionSelection={moveComposerCompletionSelection}
+              onOpenComposerCompletion={openComposerCompletion}
               onResolveApproval={resolveApproval}
               onRemoveAttachment={removePendingAttachment}
+              onSelectComposerCompletion={selectComposerCompletion}
               onSend={sendMessage}
               onStop={interruptDesktop}
               pendingAttachments={pendingAttachments}
@@ -1091,34 +1892,50 @@ export function App() {
             <PageHeader title={t("settings")} subtitle={t("settingsSubtitle")} />
             <SettingsPage
               desktopDeviceId={desktopDeviceId}
+              desktopDevices={desktopDevices}
+              desktopDevicesError={desktopDevicesError}
               deviceId={deviceId}
+              isDesktopDevicesLoading={isDesktopDevicesLoading}
               relayApiKey={relayApiKey}
-              relayEndpoint={relayEndpoint}
-              relayError={relayError}
-              relayState={relayState}
+	              relayEndpoint={relayEndpoint}
+	              relayError={relayError}
+	              relayPresence={relayPresence}
+	              relayState={relayState}
               desktopName={device.name}
               model={model}
               modelOptions={modelOptions}
               modelEffort={modelEffort}
+              notificationSoundEnabled={notificationSoundEnabled}
+              notificationVibrationEnabled={notificationVibrationEnabled}
               permissionMode={permissionMode}
               rateLimitUsage={rateLimitUsage}
+              systemNotificationsEnabled={systemNotificationsEnabled}
               themeMode={themeMode}
               language={language}
               t={t}
               onDesktopDeviceIdChange={updateDesktopDeviceId}
+              onDesktopDevicesRefresh={() => setDesktopDevicesRefreshKey(key => key + 1)}
               onModelChange={updateModel}
               onModelEffortChange={updateModelEffort}
+              onNotificationSoundEnabledChange={updateNotificationSoundEnabled}
+              onNotificationVibrationEnabledChange={updateNotificationVibrationEnabled}
               onPermissionModeChange={updatePermissionMode}
               onLanguageChange={updateLanguage}
               onRelayApiKeyChange={updateRelayApiKey}
               onRelayEndpointChange={updateRelayEndpoint}
+              onSystemNotificationsEnabledChange={updateSystemNotificationsEnabled}
               onThemeModeChange={updateThemeMode}
             />
           </div>
         ) : null}
       </section>
 
-      <BottomNav activeView={activeView} onChange={setActiveView} t={t} />
+      <BottomNav
+        activeView={activeView}
+        hasUnreadSessions={hasUnreadSessions}
+        onChange={setActiveView}
+        t={t}
+      />
     </main>
   );
 }
@@ -1140,6 +1957,115 @@ function PageHeader({
       </div>
       {action ? <div className="pageHeaderAction">{action}</div> : null}
     </header>
+  );
+}
+
+function RelayHeaderStatus({
+  language,
+  relayError,
+  relayPresence,
+  relayState
+}: {
+  language: UILanguage;
+  relayError: string;
+  relayPresence: RelayPresence | null;
+  relayState: RelayConnectionState;
+}) {
+  const state = relayHeaderState(relayState, relayPresence);
+  const label = relayHeaderLabel(state, language, relayPresence);
+  const detail = relayError ? `${label}: ${relayError}` : label;
+
+  return (
+    <div
+      aria-label={detail}
+      className="headerRelayStatus"
+      data-state={state}
+      role="status"
+      title={detail}
+    >
+      <span className="headerRelayStatusDot" />
+      <span className="headerRelayStatusLabel">{label}</span>
+    </div>
+  );
+}
+
+function WorkspacePathModal({
+  onClose,
+  onOpen,
+  onPathChange,
+  path,
+  t
+}: {
+  onClose: () => void;
+  onOpen: (path: string) => void;
+  onPathChange: (path: string) => void;
+  path: string;
+  t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
+}) {
+  const canOpen = path.trim().length > 0;
+
+  return (
+    <div
+      className="modalBackdrop"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        aria-labelledby="workspace-path-title"
+        aria-modal="true"
+        className="runtimeSettingsModal"
+        role="dialog"
+      >
+        <header className="runtimeSettingsHeader">
+          <div>
+            <h2 id="workspace-path-title">{t("openWorkspaceTitle")}</h2>
+            <p>{t("openWorkspaceHelp")}</p>
+          </div>
+          <button
+            aria-label={t("closeWorkspaceDialog")}
+            className="miniIconButton"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <form
+          className="workspacePathForm"
+          onSubmit={event => {
+            event.preventDefault();
+            onOpen(path);
+          }}
+        >
+          <label className="settingsField">
+            <span>{t("workspacePath")}</span>
+            <input
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoFocus
+              inputMode="url"
+              placeholder={t("workspacePathPlaceholder")}
+              value={path}
+              onChange={event => onPathChange(event.target.value)}
+            />
+          </label>
+          <div className="approvalActions">
+            <button className="secondaryButton" type="button" onClick={onClose}>
+              <X size={15} />
+              {t("cancelRename")}
+            </button>
+            <button className="primaryButton" disabled={!canOpen} type="submit">
+              <FolderOpen size={15} />
+              {t("addWorkspace")}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -1176,6 +2102,12 @@ function SessionsPage({
   t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
   workspaces: Workspace[];
 }) {
+  const workspaceSessions = workspaces.flatMap(workspace =>
+    workspace.sessions.map(session => ({ workspace, session }))
+  );
+  const recentSessions = [...workspaceSessions].sort(
+    (left, right) => sessionSortValue(right.session) - sessionSortValue(left.session)
+  );
   const favoriteSessions = workspaces.flatMap(workspace =>
     workspace.sessions
       .filter(session => favoriteSessionIds.has(session.id))
@@ -1185,103 +2117,137 @@ function SessionsPage({
   return (
     <div className="pageStack">
       <section className="sectionBlock" aria-labelledby="session-browser-title">
-        <div className="sectionHeader">
-          <h2 id="session-browser-title">{t("sessionBrowser")}</h2>
-          <span>{workspaces.length}</span>
-        </div>
-        <div className="sessionTabs" role="tablist" aria-label={t("sessionViews")}>
-          <button
-            aria-selected={sessionTab === "all"}
-            className="sessionTab"
-            role="tab"
-            type="button"
-            onClick={() => onTabChange("all")}
-          >
-            {t("all")}
-          </button>
-          <button
-            aria-selected={sessionTab === "favorites"}
-            className="sessionTab"
-            role="tab"
-            type="button"
-            onClick={() => onTabChange("favorites")}
-          >
-            {t("favorites")}
-          </button>
+        <div className="sessionsStickyHeader">
+          <div className="sectionHeader">
+            <h2 id="session-browser-title">{t("sessionBrowser")}</h2>
+            <span>{workspaces.length}</span>
+          </div>
+          <div className="sessionTabs" role="tablist" aria-label={t("sessionViews")}>
+            <button
+              aria-selected={sessionTab === "all"}
+              className="sessionTab"
+              role="tab"
+              type="button"
+              onClick={() => onTabChange("all")}
+            >
+              {t("all")}
+            </button>
+            <button
+              aria-selected={sessionTab === "recent"}
+              className="sessionTab"
+              role="tab"
+              type="button"
+              onClick={() => onTabChange("recent")}
+            >
+              {t("recent")}
+            </button>
+            <button
+              aria-selected={sessionTab === "favorites"}
+              className="sessionTab"
+              role="tab"
+              type="button"
+              onClick={() => onTabChange("favorites")}
+            >
+              {t("favorites")}
+            </button>
+          </div>
         </div>
 
         <div className="workspaceTree">
           {sessionTab === "all" ? (
-            workspaces.map(workspace => {
-              const isCollapsed = collapsedWorkspaces.has(workspace.path);
-              return (
-                <section
-                  className="workspaceGroup"
-                  data-active={workspace.path === activeWorkspace}
-                  key={workspace.path}
-                >
-                  <div className="workspaceRow">
-                    <button
-                      aria-expanded={!isCollapsed}
-                      aria-label={
-                        isCollapsed
-                          ? t("expandWorkspace", { name: workspace.name })
-                          : t("collapseWorkspace", { name: workspace.name })
-                      }
-                      className="miniIconButton"
-                      type="button"
-                      onClick={() => onToggleWorkspace(workspace.path)}
-                    >
-                      <ChevronRight
-                        className={isCollapsed ? "" : "disclosureOpen"}
-                        size={16}
-                      />
-                    </button>
-                    <button
-                      aria-label={t("openWorkspace", { name: workspace.name })}
-                      className="workspaceOpenButton"
-                      type="button"
-                      onClick={() => onOpenWorkspace(workspace.path)}
-                    >
-                      <FolderOpen size={17} />
-                      <div>
-                        <strong>{workspace.name}</strong>
-                        <small>{workspace.path}</small>
-                      </div>
-                    </button>
-                    <button
-                      aria-label={t("newSessionIn", { name: workspace.name })}
-                      className="miniIconButton"
-                      type="button"
-                      onClick={() => onStartSession(workspace.path)}
-                    >
-                      <Plus size={16} />
-                    </button>
-                  </div>
-                  {!isCollapsed ? (
-                    <div className="sessionList">
-                      {workspace.sessions.length > 0 ? (
-                        workspace.sessions.map(session => (
-                          <MobileSessionRow
-                            active={session.id === activeSessionId}
-                            favorite={favoriteSessionIds.has(session.id)}
-                            key={session.id}
-                            onFavorite={() => onToggleFavorite(session.id)}
-                            onIconChange={iconId => onSessionIconChange(session.id, iconId)}
-                            onOpen={() => onOpenSession(session.id)}
-                            onRename={title => onRenameSession(workspace.path, session, title)}
-                            session={session}
-                            t={t}
-                          />
-                        ))
-                      ) : (
-                        <p className="emptyText">{t("noWorkspaceSessions")}</p>
-                      )}
+            workspaces.length > 0 ? (
+              workspaces.map(workspace => {
+                const isCollapsed = collapsedWorkspaces.has(workspace.path);
+                return (
+                  <section
+                    className="workspaceGroup"
+                    data-active={workspace.path === activeWorkspace}
+                    key={workspace.path}
+                  >
+                    <div className="workspaceRow">
+                      <button
+                        aria-expanded={!isCollapsed}
+                        aria-label={
+                          isCollapsed
+                            ? t("expandWorkspace", { name: workspace.name })
+                            : t("collapseWorkspace", { name: workspace.name })
+                        }
+                        className="miniIconButton"
+                        type="button"
+                        onClick={() => onToggleWorkspace(workspace.path)}
+                      >
+                        <ChevronRight
+                          className={isCollapsed ? "" : "disclosureOpen"}
+                          size={16}
+                        />
+                      </button>
+                      <button
+                        aria-label={t("openWorkspace", { name: workspace.name })}
+                        className="workspaceOpenButton"
+                        type="button"
+                        onClick={() => onOpenWorkspace(workspace.path)}
+                      >
+                        <FolderOpen size={17} />
+                        <div>
+                          <strong>{workspace.name}</strong>
+                          <small>{workspace.path}</small>
+                        </div>
+                      </button>
+                      <button
+                        aria-label={t("newSessionIn", { name: workspace.name })}
+                        className="miniIconButton"
+                        type="button"
+                        onClick={() => onStartSession(workspace.path)}
+                      >
+                        <Plus size={16} />
+                      </button>
                     </div>
-                  ) : null}
-                </section>
-              );
-            })
+                    {!isCollapsed ? (
+                      <div className="sessionList">
+                        {workspace.sessions.length > 0 ? (
+                          workspace.sessions.map(session => (
+                            <MobileSessionRow
+                              active={session.id === activeSessionId}
+                              favorite={favoriteSessionIds.has(session.id)}
+                              key={session.id}
+                              onFavorite={() => onToggleFavorite(session.id)}
+                              onIconChange={iconId => onSessionIconChange(session.id, iconId)}
+                              onOpen={() => onOpenSession(session.id)}
+                              onRename={title => onRenameSession(workspace.path, session, title)}
+                              session={session}
+                              t={t}
+                            />
+                          ))
+                        ) : (
+                          <p className="emptyText">{t("noWorkspaceSessions")}</p>
+                        )}
+                      </div>
+                    ) : null}
+                  </section>
+                );
+              })
+            ) : (
+              <p className="emptyText">{t("noWorkspaces")}</p>
+            )
+          ) : sessionTab === "recent" ? (
+            recentSessions.length > 0 ? (
+              recentSessions.map(({ workspace, session }) => (
+                <MobileSessionRow
+                  active={session.id === activeSessionId}
+                  favorite={favoriteSessionIds.has(session.id)}
+                  key={session.id}
+                  meta={`${workspace.name} · ${session.updatedAt}`}
+                  onFavorite={() => onToggleFavorite(session.id)}
+                  onIconChange={iconId => onSessionIconChange(session.id, iconId)}
+                  onOpen={() => onOpenSession(session.id)}
+                  onRename={title => onRenameSession(workspace.path, session, title)}
+                  session={session}
+                  t={t}
+                />
+              ))
+            ) : (
+              <p className="emptyText">{t("recentEmpty")}</p>
+            )
           ) : favoriteSessions.length > 0 ? (
             favoriteSessions.map(({ workspace, session }) => (
               <MobileSessionRow
@@ -1474,6 +2440,7 @@ function ChatPage({
   approvals,
   attachmentInputRef,
   composer,
+  composerCompletion,
   desktopStatus,
   hiddenMessageCount,
   isSessionLoading,
@@ -1481,10 +2448,14 @@ function ChatPage({
   messages,
   messagesRef,
   onAddImages,
+  onCloseComposerCompletion,
   onComposerChange,
   onLoadOlderMessages,
+  onMoveComposerCompletionSelection,
+  onOpenComposerCompletion,
   onRemoveAttachment,
   onResolveApproval,
+  onSelectComposerCompletion,
   onSend,
   onStop,
   pendingAttachments,
@@ -1495,6 +2466,7 @@ function ChatPage({
   approvals: Approval[];
   attachmentInputRef: RefObject<HTMLInputElement | null>;
   composer: string;
+  composerCompletion: ComposerCompletion | null;
   desktopStatus: string;
   hiddenMessageCount: number;
   isSessionLoading: boolean;
@@ -1502,20 +2474,42 @@ function ChatPage({
   messages: Message[];
   messagesRef: RefObject<HTMLDivElement | null>;
   onAddImages: (files: FileList | File[]) => Promise<void>;
-  onComposerChange: (value: string) => void;
+  onCloseComposerCompletion: () => void;
+  onComposerChange: (value: string, cursor: number) => void;
   onLoadOlderMessages: () => void;
+  onMoveComposerCompletionSelection: (direction: 1 | -1) => void;
+  onOpenComposerCompletion: (mode: ComposerCompletionMode, cursor: number) => void;
   onRemoveAttachment: (id: string) => void;
   onResolveApproval: (approvalId: string, decision: "accept" | "decline") => void;
+  onSelectComposerCompletion: (item: ComposerSuggestion) => void;
   onSend: () => void;
   onStop: () => void;
-  pendingAttachments: PendingImageAttachment[];
+  pendingAttachments: PendingComposerAttachment[];
   turnDurationMs: number | null;
   t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
   session?: Session;
 }) {
-  const canSend = composer.trim().length > 0 || pendingAttachments.length > 0;
-  const statusState = isWorking ? "working" : session ? "ready" : "idle";
-  const statusText = isWorking ? t("working") : session ? t("ready") : t("noSession");
+  const composerDisabled = !session || isSessionLoading;
+  const canSend =
+    !composerDisabled && (composer.trim().length > 0 || pendingAttachments.length > 0);
+  const showComposerStatus = !isWorking && !session && desktopStatus;
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useLayoutEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.style.height = "auto";
+    const maxHeight = Number.parseFloat(window.getComputedStyle(input).maxHeight);
+    const nextHeight = Number.isFinite(maxHeight)
+      ? Math.min(input.scrollHeight, maxHeight)
+      : input.scrollHeight;
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY =
+      Number.isFinite(maxHeight) && input.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [composer]);
 
   return (
     <div className="chatLayout">
@@ -1537,7 +2531,6 @@ function ChatPage({
         ) : null}
         {isSessionLoading ? (
           <article className="messageItem" data-role="event">
-            <div className="eventMarker active" aria-hidden="true" />
             <div className="messageBubble">
               <small>{t("loading")}</small>
               <p>{t("resumingSession")}</p>
@@ -1564,9 +2557,6 @@ function ChatPage({
         ) : null}
         {messages.map(message => (
           <article className="messageItem" data-role={message.role} key={message.id}>
-            {message.role === "event" ? (
-              <div className="eventMarker" aria-hidden="true" />
-            ) : null}
             <div className="messageBubble">
               {message.meta ? <small>{message.meta}</small> : null}
               <MarkdownContent text={message.text} />
@@ -1576,26 +2566,15 @@ function ChatPage({
             </div>
           </article>
         ))}
-        {isWorking ? (
-          <article className="messageItem" data-role="event">
-            <div className="eventMarker active" aria-hidden="true" />
-            <div className="messageBubble">
-              <small>{t("working")}</small>
-              <p>{t("desktopRunningTurn")}</p>
-            </div>
-          </article>
-        ) : null}
       </div>
 
       <div className="composerDock">
-        <div className="composerStatus" data-state={statusState}>
-          <span className="statusDot" aria-hidden="true" />
-          <span>{statusText}</span>
-          {turnDurationMs !== null ? (
-            <span className="turnDuration">{formatTurnDuration(turnDurationMs)}</span>
-          ) : null}
-          {desktopStatus ? <small>{desktopStatus}</small> : null}
-        </div>
+        {showComposerStatus ? (
+          <div className="composerStatus" data-state="idle">
+            <span className="statusDot" aria-hidden="true" />
+            <small>{desktopStatus}</small>
+          </div>
+        ) : null}
 
         <form
           className="composer"
@@ -1604,6 +2583,13 @@ function ChatPage({
             onSend();
           }}
         >
+          {composerCompletion ? (
+            <ComposerCompletionMenu
+              completion={composerCompletion}
+              onSelect={onSelectComposerCompletion}
+              t={t}
+            />
+          ) : null}
           <input
             accept="image/*"
             aria-label={t("imageAttachments")}
@@ -1624,7 +2610,13 @@ function ChatPage({
               <div className="attachmentStrip" aria-label={t("selectedImages")}>
                 {pendingAttachments.map(attachment => (
                   <div className="attachmentPreview" key={attachment.id}>
-                    <img alt="" src={attachment.dataUrl} />
+                    {attachment.kind === "image" ? (
+                      <img alt="" src={attachment.dataUrl} />
+                    ) : (
+                      <span className="attachmentFileIcon" aria-hidden="true">
+                        <FileText size={15} />
+                      </span>
+                    )}
                     <span>{attachment.name}</span>
                     <button
                       aria-label={t("removeAttachment", { name: attachment.name })}
@@ -1639,13 +2631,47 @@ function ChatPage({
             ) : null}
             <textarea
               aria-label={t("messageCodex")}
-              onChange={event => onComposerChange(event.target.value)}
+              disabled={composerDisabled}
+              ref={composerInputRef}
+              onChange={event =>
+                onComposerChange(event.target.value, event.target.selectionStart)
+              }
               onKeyDown={event => {
+                if (composerCompletion) {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    onMoveComposerCompletionSelection(
+                      event.key === "ArrowDown" ? 1 : -1
+                    );
+                    return;
+                  }
+                  if (
+                    (event.key === "Enter" || event.key === "Tab") &&
+                    composerCompletion.items[composerCompletion.selectedIndex]
+                  ) {
+                    event.preventDefault();
+                    onSelectComposerCompletion(
+                      composerCompletion.items[composerCompletion.selectedIndex]
+                    );
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCloseComposerCompletion();
+                    return;
+                  }
+                }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   onSend();
                 }
               }}
+              onSelect={event =>
+                onComposerChange(
+                  event.currentTarget.value,
+                  event.currentTarget.selectionStart
+                )
+              }
               placeholder={t("composerPlaceholder")}
               rows={1}
               value={composer}
@@ -1655,6 +2681,7 @@ function ChatPage({
                 <button
                   aria-label={t("addImages")}
                   className="composerIconButton"
+                  disabled={composerDisabled}
                   type="button"
                   onClick={() => attachmentInputRef.current?.click()}
                 >
@@ -1664,8 +2691,13 @@ function ChatPage({
                 <button
                   aria-label={t("fileMention")}
                   className="composerTextButton"
+                  disabled={composerDisabled}
                   type="button"
-                  onClick={() => onComposerChange(`${composer}@`)}
+                  onClick={() => {
+                    const cursor = composerInputRef.current?.selectionStart ?? composer.length;
+                    onOpenComposerCompletion("file", cursor);
+                    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+                  }}
                 >
                   <AtSign size={16} />
                   <span>{t("files")}</span>
@@ -1673,8 +2705,13 @@ function ChatPage({
                 <button
                   aria-label={t("skills")}
                   className="composerTextButton"
+                  disabled={composerDisabled}
                   type="button"
-                  onClick={() => onComposerChange(`${composer}$`)}
+                  onClick={() => {
+                    const cursor = composerInputRef.current?.selectionStart ?? composer.length;
+                    onOpenComposerCompletion("skill", cursor);
+                    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+                  }}
                 >
                   <span className="composerDollarIcon" aria-hidden="true">
                     $
@@ -1706,6 +2743,48 @@ function ChatPage({
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+function ComposerCompletionMenu({
+  completion,
+  onSelect,
+  t
+}: {
+  completion: ComposerCompletion;
+  onSelect: (item: ComposerSuggestion) => void;
+  t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
+}) {
+  const emptyText =
+    completion.mode === "file" ? t("noMatchingFiles") : t("noMatchingSkills");
+
+  return (
+    <div className="composerCompletionMenu" role="listbox">
+      {completion.items.length > 0 ? (
+        completion.items.map((item, index) => (
+          <button
+            aria-selected={index === completion.selectedIndex}
+            className="composerCompletionItem"
+            key={item.id}
+            role="option"
+            type="button"
+            onClick={() => onSelect(item)}
+          >
+            <span className="composerCompletionIcon" aria-hidden="true">
+              {item.type === "file" ? <FileText size={15} /> : "$"}
+            </span>
+            <span>
+              <strong>{item.label}</strong>
+              {item.detail ? <small>{item.detail}</small> : null}
+            </span>
+          </button>
+        ))
+      ) : (
+        <div className="composerCompletionEmpty" role="status">
+          {completion.loading ? t("loading") : emptyText}
+        </div>
+      )}
     </div>
   );
 }
@@ -1887,51 +2966,73 @@ function RuntimeSettingsModal({
 
 function SettingsPage({
   desktopDeviceId,
+  desktopDevices,
+  desktopDevicesError,
   deviceId,
+  isDesktopDevicesLoading,
   language,
   model,
   modelOptions,
   modelEffort,
+  notificationSoundEnabled,
+  notificationVibrationEnabled,
   permissionMode,
   rateLimitUsage,
   relayApiKey,
   relayEndpoint,
   relayError,
+  relayPresence,
   relayState,
   desktopName,
+  systemNotificationsEnabled,
   t,
   themeMode,
   onDesktopDeviceIdChange,
+  onDesktopDevicesRefresh,
   onLanguageChange,
   onModelChange,
   onModelEffortChange,
+  onNotificationSoundEnabledChange,
+  onNotificationVibrationEnabledChange,
   onPermissionModeChange,
   onRelayApiKeyChange,
   onRelayEndpointChange,
+  onSystemNotificationsEnabledChange,
   onThemeModeChange
 }: {
   desktopDeviceId: string;
+  desktopDevices: RelayDesktopDevice[];
+  desktopDevicesError: string;
   deviceId: string;
+  isDesktopDevicesLoading: boolean;
   language: UILanguage;
   model: string;
   modelOptions: ModelOption[];
   modelEffort: ModelEffort;
+  notificationSoundEnabled: boolean;
+  notificationVibrationEnabled: boolean;
   permissionMode: PermissionMode;
   rateLimitUsage: RateLimitUsage | null;
   relayApiKey: string;
   relayEndpoint: string;
   relayError: string;
+  relayPresence: RelayPresence | null;
   relayState: RelayConnectionState;
   desktopName: string;
+  systemNotificationsEnabled: boolean;
   t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
   themeMode: ThemeMode;
   onDesktopDeviceIdChange: (value: string) => void;
+  onDesktopDevicesRefresh: () => void;
   onLanguageChange: (value: UILanguage) => void;
   onModelChange: (value: string) => void;
   onModelEffortChange: (value: ModelEffort) => void;
+  onNotificationSoundEnabledChange: (value: boolean) => void;
+  onNotificationVibrationEnabledChange: (value: boolean) => void;
   onPermissionModeChange: (value: PermissionMode) => void;
   onRelayApiKeyChange: (value: string) => void;
   onRelayEndpointChange: (value: string) => void;
+  onSystemNotificationsEnabledChange: (value: boolean) => void;
   onThemeModeChange: (value: ThemeMode) => void;
 }) {
   const [copiedField, setCopiedField] = useState<"apiKey" | "desktopDeviceId" | null>(
@@ -1983,24 +3084,50 @@ function SettingsPage({
           </label>
           <label className="settingsField">
             <span>{t("desktopDeviceId")}</span>
-            <div className="settingsInputRow">
-              <input
-                autoCapitalize="none"
-                autoCorrect="off"
+            <div className="desktopDevicePicker">
+              <select
+                disabled={desktopDevices.length === 0}
+                value={desktopDevices.some(device => device.deviceId === desktopDeviceId) ? desktopDeviceId : ""}
                 onChange={event => onDesktopDeviceIdChange(event.target.value)}
-                placeholder="desktop-main"
-                value={desktopDeviceId}
-              />
+              >
+                {desktopDevices.length === 0 ? (
+                  <option value="">
+                    {isDesktopDevicesLoading
+                      ? t("loadingDesktopDevices")
+                      : t("noDesktopDevices")}
+                  </option>
+                ) : null}
+                {desktopDevices.map(device => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.deviceId} · {device.desktopCount} {t("desktop")} ·{" "}
+                    {device.clientCount} {t("mobileClients")}
+                  </option>
+                ))}
+              </select>
+              <button
+                aria-label={t("refreshDevices")}
+                className="copyValueButton"
+                type="button"
+                onClick={onDesktopDevicesRefresh}
+              >
+                <RefreshCw size={14} />
+                <span>{t("refreshDevices")}</span>
+              </button>
+            </div>
+            <small>
+              {desktopDeviceId ? `${t("desktopDeviceIdFallback")}: ${desktopDeviceId}` : desktopDevicesError || t("noDesktopDevices")}
+            </small>
+            {desktopDeviceId ? (
               <button
                 aria-label={t("copyDesktopDeviceId")}
-                className="copyValueButton"
+                className="copyValueButton inlineCopyButton"
                 type="button"
                 onClick={() => void copySettingValue("desktopDeviceId", desktopDeviceId)}
               >
                 {copiedField === "desktopDeviceId" ? <Check size={14} /> : <Copy size={14} />}
                 <span>{copiedField === "desktopDeviceId" ? t("copied") : t("copy")}</span>
               </button>
-            </div>
+            ) : null}
           </label>
           <label className="settingsField">
             <span>{t("apiKey")}</span>
@@ -2037,6 +3164,11 @@ function SettingsPage({
           icon={<Laptop size={18} />}
           label={t("desktop")}
           value={desktopName}
+        />
+        <SettingsRow
+          icon={<CircleDot size={18} />}
+          label={t("desktopConnection")}
+          value={desktopPresenceLabel(relayPresence, language)}
         />
         <SettingsRow
           icon={<Smartphone size={18} />}
@@ -2145,11 +3277,31 @@ function SettingsPage({
           label={t("workspaceBoundary")}
           value={t("enforced")}
         />
-        <SettingsRow
+      </section>
+
+      <section className="sectionBlock">
+        <h2>{t("notifications")}</h2>
+        <SettingsToggle
+          checked={systemNotificationsEnabled}
           icon={<Bell size={18} />}
-          label={t("notifications")}
-          value={t("notConfigured")}
+          label={t("systemNotifications")}
+          onChange={onSystemNotificationsEnabledChange}
         />
+        <SettingsToggle
+          checked={notificationVibrationEnabled}
+          disabled={!systemNotificationsEnabled}
+          icon={<Smartphone size={18} />}
+          label={t("notificationVibration")}
+          onChange={onNotificationVibrationEnabledChange}
+        />
+        <SettingsToggle
+          checked={notificationSoundEnabled}
+          disabled={!systemNotificationsEnabled}
+          icon={<Bell size={18} />}
+          label={t("notificationSound")}
+          onChange={onNotificationSoundEnabledChange}
+        />
+        <p className="settingsHelp">{t("notificationsHelp")}</p>
       </section>
 
       <section className="sectionBlock">
@@ -2171,10 +3323,12 @@ function SettingsPage({
 
 function BottomNav({
   activeView,
+  hasUnreadSessions,
   onChange,
   t
 }: {
   activeView: ViewMode;
+  hasUnreadSessions: boolean;
   onChange: (view: ViewMode) => void;
   t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
 }) {
@@ -2182,9 +3336,11 @@ function BottomNav({
     <nav className="bottomNav" aria-label={t("primary")}>
       <NavItem
         active={activeView === "sessions"}
+        hasUnread={hasUnreadSessions}
         icon={<ListChecks size={20} />}
         label={t("sessions")}
         onClick={() => onChange("sessions")}
+        unreadLabel={t("unreadTurn")}
       />
       <NavItem
         active={activeView === "chat"}
@@ -2204,18 +3360,31 @@ function BottomNav({
 
 function NavItem({
   active,
+  hasUnread = false,
   icon,
   label,
-  onClick
+  onClick,
+  unreadLabel
 }: {
   active: boolean;
+  hasUnread?: boolean;
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  unreadLabel?: string;
 }) {
   return (
-    <button className="navItem" data-active={active} onClick={onClick} type="button">
-      {icon}
+    <button
+      aria-label={hasUnread && unreadLabel ? `${label}, ${unreadLabel}` : label}
+      className="navItem"
+      data-active={active}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="navIconWrap">
+        {icon}
+        {hasUnread ? <span className="navUnreadDot" aria-hidden="true" /> : null}
+      </span>
       <span>{label}</span>
     </button>
   );
@@ -2283,6 +3452,33 @@ function SettingsRow({
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function SettingsToggle({
+  checked,
+  disabled = false,
+  icon,
+  label,
+  onChange
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  icon: ReactNode;
+  label: string;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="settingsToggle" data-disabled={disabled}>
+      <span className="settingsIcon">{icon}</span>
+      <span>{label}</span>
+      <input
+        checked={checked}
+        disabled={disabled}
+        type="checkbox"
+        onChange={event => onChange(event.target.checked)}
+      />
+    </label>
   );
 }
 
@@ -2524,6 +3720,10 @@ function normalizedRelayEndpoint(value: string): string {
     return `${protocol}://${host}:${trimmed}`;
   }
 
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/^http/i, "ws");
+  }
+
   if (!/^wss?:\/\//i.test(trimmed)) {
     return `${protocol}://${trimmed}`;
   }
@@ -2690,6 +3890,37 @@ function relayStateLabel(value: RelayConnectionState, language: UILanguage): str
   return textFor(language, value);
 }
 
+function desktopPresenceLabel(
+  presence: RelayPresence | null,
+  language: UILanguage
+): string {
+  return presence?.desktopCount ? textFor(language, "desktopOnline") : textFor(language, "desktopOffline");
+}
+
+function relayHeaderState(
+  value: RelayConnectionState,
+  presence: RelayPresence | null
+): "connected" | "connecting" | "reconnecting" | "disconnected" {
+  if (value === "connecting" || value === "reconnecting") {
+    return value;
+  }
+  if (value === "connected" && presence?.desktopCount) {
+    return "connected";
+  }
+  return "disconnected";
+}
+
+function relayHeaderLabel(
+  value: ReturnType<typeof relayHeaderState>,
+  language: UILanguage,
+  presence: RelayPresence | null
+): string {
+  if (value === "connected") {
+    return desktopPresenceLabel(presence, language);
+  }
+  return textFor(language, value);
+}
+
 function contextLabel(
   usage: { usedTokens: number; contextWindow: number | null } | null,
   language: UILanguage = "en"
@@ -2726,6 +3957,12 @@ function formatTurnDuration(milliseconds: number): string {
     return `${minutes}m ${seconds}s`;
   }
   return `${seconds}s`;
+}
+
+function sessionSortValue(session: Session): number {
+  const dateText = session.updatedAt.split(" · ").at(-1) ?? session.updatedAt;
+  const value = Date.parse(dateText);
+  return Number.isFinite(value) ? value : 0;
 }
 
 function isHiddenChatMessage(message: Message): boolean {
@@ -2769,21 +4006,105 @@ function relayWebSocketURL(
   endpoint: string,
   role: "desktop" | "client",
   deviceId: string,
-  apiKey: string
+  apiKey: string,
+  clientDeviceId?: string
 ): string | null {
-  const base = endpoint.trim().replace(/\/+$/, "");
+  let base = endpoint.trim().replace(/\/+$/, "");
   if (!base) {
     return null;
   }
+  if (base.startsWith("https://")) {
+    base = `wss://${base.slice("https://".length)}`;
+  } else if (base.startsWith("http://")) {
+    base = `ws://${base.slice("http://".length)}`;
+  }
   const separator = base.includes("?") ? "&" : "?";
-  const url = `${base}/ws/${role}${separator}device_id=${encodeURIComponent(
-    deviceId
-  )}&api_key=${encodeURIComponent(apiKey)}`;
+  const params = new URLSearchParams({
+    device_id: deviceId,
+    api_key: apiKey
+  });
+  if (role === "client" && clientDeviceId) {
+    params.set("client_device_id", clientDeviceId);
+  }
+  const url = `${base}/ws/${role}${separator}${params.toString()}`;
   try {
     return new URL(url).toString();
   } catch {
     return null;
   }
+}
+
+function relayDevicesURL(endpoint: string): string | null {
+  const baseURL = relayHTTPBaseURL(endpoint);
+  if (!baseURL) {
+    return null;
+  }
+  baseURL.pathname = `${baseURL.pathname.replace(/\/+$/, "")}/api/auth/devices`;
+  baseURL.search = "";
+  baseURL.hash = "";
+  return baseURL.toString();
+}
+
+function relayHTTPBaseURL(endpoint: string): URL | null {
+  const trimmed = endpoint.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "ws:") {
+      url.protocol = "http:";
+    } else if (url.protocol === "wss:") {
+      url.protocol = "https:";
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function relayDesktopDevicesFromPayload(payload: unknown): RelayDesktopDevice[] {
+  const devices = asRecord(payload).devices;
+  if (!Array.isArray(devices)) {
+    return [];
+  }
+  return devices
+    .map(item => {
+      const record = asRecord(item);
+      const deviceId = stringFromUnknown(record.device_id);
+      if (!deviceId) {
+        return null;
+      }
+      return {
+        deviceId,
+        desktopCount: numberFromUnknown(record.desktop_count),
+        clientCount: numberFromUnknown(record.client_count),
+        connected: Boolean(record.connected),
+        lastSeen: stringFromUnknown(record.last_seen)
+      };
+    })
+    .filter((device): device is RelayDesktopDevice => Boolean(device))
+    .filter(device => device.desktopCount > 0 || device.connected)
+    .sort((left, right) => Number(right.connected) - Number(left.connected));
+}
+
+function relayPresenceFromPayload(payload: unknown): RelayPresence {
+  const record = asRecord(payload);
+  return {
+    deviceId: stringFromUnknown(record.device_id),
+    desktopCount: numberFromUnknown(record.desktop_count),
+    clientCount: numberFromUnknown(record.client_count),
+    connected: Boolean(record.connected),
+    lastSeen: stringFromUnknown(record.last_seen)
+  };
+}
+
+function errorMessageFromBody(body: unknown): string {
+  const error = asRecord(body).error;
+  return typeof error === "string" ? error : "";
 }
 
 function parseRelayEnvelope(data: unknown): RelayEnvelope | null {
@@ -2796,4 +4117,302 @@ function parseRelayEnvelope(data: unknown): RelayEnvelope | null {
   } catch {
     return null;
   }
+}
+
+function clientCommandAckId(payload: unknown): string | null {
+  const id = asRecord(payload).client_message_id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function relayEventFromPayload(payload: unknown): RelayEventRecord | null {
+  const event = asRecord(asRecord(payload).event);
+  return normalizeRelayEvent(event);
+}
+
+function snapshotFromRelayEvent(event: RelayEventRecord): DesktopSnapshotPayload | null {
+  const payload = asRecord(event.payload);
+  const snapshot = asRecord(payload.snapshot);
+  if (Object.keys(snapshot).length > 0) {
+    return snapshot as DesktopSnapshotPayload;
+  }
+  return Object.keys(payload).length > 0 ? (payload as DesktopSnapshotPayload) : null;
+}
+
+function relayEventsFromBacklog(payload: unknown): RelayEventRecord[] {
+  const events = asRecord(payload).events;
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events
+    .map(item => normalizeRelayEvent(asRecord(item)))
+    .filter((event): event is RelayEventRecord => event !== null);
+}
+
+function normalizeRelayEvent(event: Record<string, unknown>): RelayEventRecord | null {
+  const id = typeof event.id === "number" ? event.id : Number(event.id);
+  const type = typeof event.type === "string" ? event.type : "";
+  if (!Number.isFinite(id) || id <= 0 || !type) {
+    return null;
+  }
+  return {
+    id,
+    type,
+    workspace_id:
+      typeof event.workspace_id === "string" ? event.workspace_id : undefined,
+    session_id: typeof event.session_id === "string" ? event.session_id : undefined,
+    title: typeof event.title === "string" ? event.title : undefined,
+    body: typeof event.body === "string" ? event.body : undefined,
+    payload: asRecord(event.payload),
+    created_at: typeof event.created_at === "string" ? event.created_at : undefined
+  };
+}
+
+function composerSuggestionsFromPayload(value: unknown): ComposerSuggestion[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item): ComposerSuggestion | null => {
+      const record = asRecord(item);
+      const type =
+        record.type === "skill" ? "skill" : record.type === "file" ? "file" : null;
+      const label = typeof record.label === "string" ? record.label : "";
+      const insertText = typeof record.insertText === "string" ? record.insertText : "";
+      if (!type || !label || !insertText) {
+        return null;
+      }
+      const suggestion: ComposerSuggestion = {
+        id:
+          typeof record.id === "string" && record.id.length > 0
+            ? record.id
+            : `${type}-${label}`,
+        type,
+        label,
+        name:
+          typeof record.name === "string" && record.name.length > 0
+            ? record.name
+            : label,
+        detail: typeof record.detail === "string" ? record.detail : undefined,
+        insertText,
+        path: typeof record.path === "string" ? record.path : undefined
+      };
+      return suggestion;
+    })
+    .filter((item): item is ComposerSuggestion => item !== null);
+}
+
+function activeComposerTrigger(
+  value: string,
+  cursor: number
+): { mode: ComposerCompletionMode; query: string; tokenStart: number } | null {
+  const prefix = value.slice(0, cursor);
+  const match = /(^|\s)([@$])([^\s@$]*)$/.exec(prefix);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    mode: match[2] === "@" ? "file" : "skill",
+    query: match[3],
+    tokenStart: match.index + match[1].length
+  };
+}
+
+function readLastRelayEventId(): number {
+  const value = Number(window.localStorage.getItem(RELAY_LAST_EVENT_ID_STORAGE_KEY) ?? "0");
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function readBooleanStorage(key: string, fallback: boolean): boolean {
+  const value = window.localStorage.getItem(key);
+  if (value === null) {
+    return fallback;
+  }
+  return value === "true";
+}
+
+function writeBooleanStorage(key: string, value: boolean) {
+  window.localStorage.setItem(key, String(value));
+}
+
+function readPendingRelayCommands(): Record<string, PendingRelayCommand> {
+  try {
+    const raw = window.localStorage.getItem(PENDING_RELAY_COMMANDS_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    const record = asRecord(parsed);
+    return Object.fromEntries(
+      Object.entries(record).filter((entry): entry is [string, PendingRelayCommand] => {
+        const pending = asRecord(entry[1]);
+        const message = asRecord(pending.message);
+        return (
+          typeof pending.id === "string" &&
+          typeof pending.createdAt === "number" &&
+          typeof message.type === "string"
+        );
+      })
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writePendingRelayCommands(commands: Record<string, PendingRelayCommand>) {
+  try {
+    window.localStorage.setItem(
+      PENDING_RELAY_COMMANDS_STORAGE_KEY,
+      JSON.stringify(commands)
+    );
+  } catch {
+    // Large image attachments can exceed localStorage; in-memory retry still applies.
+  }
+}
+
+function rememberRelayEventId(currentEventId: number, id: number): number {
+  const current = Math.max(currentEventId, readLastRelayEventId());
+  const next = Math.max(current, id);
+  window.localStorage.setItem(RELAY_LAST_EVENT_ID_STORAGE_KEY, String(next));
+  return next;
+}
+
+async function notifyTurnCompleted(
+  event: RelayEventRecord,
+  settings: TurnCompleteNotificationSettings
+) {
+  try {
+    if (!settings.enabled || event.type !== "turn.completed") {
+      return;
+    }
+    if (Capacitor.getPlatform() !== "android") {
+      return;
+    }
+
+    const ready = await ensureTurnCompleteNotificationReady(settings);
+    if (!ready) {
+      return;
+    }
+
+    const channelId = turnCompleteNotificationChannelId(settings);
+    const payload = asRecord(event.payload);
+    const sessionTitle =
+      typeof payload.session_title === "string" ? payload.session_title.trim() : "";
+    const workspace =
+      typeof payload.workspace === "string" ? workspaceName(payload.workspace) : "";
+    const payloadFinalMessage =
+      typeof payload.final_message === "string" ? payload.final_message : "";
+    const body =
+      notificationBodyFromFinalMessage(payloadFinalMessage || event.body || "") ||
+      (sessionTitle ? `${sessionTitle} completed.` : "A Codex turn completed.");
+    const largeBody = workspace ? `${body}\nWorkspace: ${workspace}` : body;
+    const title = notificationTitleForTurn(event.title, sessionTitle);
+
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: notificationIdFromEvent(event.id),
+          title,
+          body,
+          largeBody,
+          summaryText: workspace || "Codex+ Mobile",
+          channelId,
+          sound: settings.sound ? NOTIFICATION_SOUND_FILE : undefined,
+          autoCancel: true,
+          extra: {
+            sessionId: event.session_id ?? "",
+            workspaceId: event.workspace_id ?? "",
+            eventId: event.id
+          }
+        }
+      ]
+    });
+  } catch {
+    // Notification delivery should never interrupt relay event handling.
+  }
+}
+
+function notificationTitleForTurn(title: string | undefined, sessionTitle: string): string {
+  const normalizedTitle = (title ?? "").trim();
+  if (sessionTitle && (!normalizedTitle || normalizedTitle === "Turn completed")) {
+    return sessionTitle;
+  }
+  return normalizedTitle || sessionTitle || "Codex+";
+}
+
+function notificationBodyFromFinalMessage(message: string): string {
+  return truncateNotificationText(cleanNotificationText(message), NOTIFICATION_BODY_MAX_CHARS);
+}
+
+function cleanNotificationText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_~>#-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateNotificationText(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) {
+    return text;
+  }
+  return `${chars.slice(0, maxChars).join("").trimEnd()}...`;
+}
+
+async function ensureTurnCompleteNotificationReady(
+  settings: Pick<TurnCompleteNotificationSettings, "sound" | "vibration">
+): Promise<boolean> {
+  if (Capacitor.getPlatform() !== "android") {
+    return false;
+  }
+
+  const currentPermission = await LocalNotifications.checkPermissions();
+  const permission =
+    currentPermission.display === "granted"
+      ? currentPermission
+      : await LocalNotifications.requestPermissions();
+  if (permission.display !== "granted") {
+    return false;
+  }
+
+  await LocalNotifications.createChannel({
+    id: turnCompleteNotificationChannelId(settings),
+    name: "Codex turn completion",
+    description: "Notifications shown when a Codex turn completes.",
+    importance: settings.sound || settings.vibration ? 5 : 3,
+    visibility: 1,
+    sound: settings.sound ? NOTIFICATION_SOUND_RESOURCE : undefined,
+    vibration: settings.vibration,
+    lights: true,
+    lightColor: "#ff3b30"
+  });
+  return true;
+}
+
+function turnCompleteNotificationChannelId(
+  settings: Pick<TurnCompleteNotificationSettings, "sound" | "vibration">
+): string {
+  const sound = settings.sound ? "sound" : "silent";
+  const vibration = settings.vibration ? "vibrate" : "still";
+  return `${NOTIFICATION_CHANNEL_PREFIX}_${sound}_${vibration}_${NOTIFICATION_CHANNEL_VERSION}`;
+}
+
+function notificationIdFromEvent(id: number): number {
+  const normalized = Math.trunc(Math.abs(id));
+  return normalized > 0 && normalized <= 2147483647
+    ? normalized
+    : Math.floor(Date.now() % 2147483647);
+}
+
+function stringFromUnknown(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numberFromUnknown(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }

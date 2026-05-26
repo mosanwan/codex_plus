@@ -15,6 +15,7 @@
   --color-success-soft: #102719;
   --color-danger: #ff9f74;
   --color-danger-soft: #311912;
+  --color-unread: #ff3b30;
   --color-focus: #8db6ff;
   --color-signature-mustard: #d9a441;
   --font-sans: Haas, Inter, ui-sans-serif, system-ui, -apple-system,
@@ -54,6 +55,7 @@
   --color-success-soft: #f5fff7;
   --color-danger: #aa2d00;
   --color-danger-soft: #fff4ed;
+  --color-unread: #d92d20;
   --color-focus: #1b61c9;
   --color-signature-mustard: #d9a441;
 }
@@ -134,8 +136,12 @@ p {
   background: var(--color-canvas);
 }
 
+.pageHeader > div:first-child {
+  min-width: 0;
+}
+
 .pageHeader h1 {
-  max-width: min(270px, calc(100vw - 96px));
+  max-width: min(240px, calc(100vw - 190px));
   overflow: hidden;
   color: var(--color-ink);
   font-size: 20px;
@@ -149,6 +155,61 @@ p {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  gap: 6px;
+}
+
+.headerRelayStatus {
+  display: inline-flex;
+  height: 38px;
+  max-width: 126px;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  color: var(--color-muted);
+  background: transparent;
+}
+
+.headerRelayStatusDot {
+  display: block;
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
+
+.headerRelayStatusLabel {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-body);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerRelayStatus[data-state="connected"] .headerRelayStatusLabel {
+  color: var(--color-success);
+}
+
+.headerRelayStatus[data-state="connected"] {
+  color: var(--color-success);
+}
+
+.headerRelayStatus[data-state="connecting"],
+.headerRelayStatus[data-state="reconnecting"] {
+  color: var(--color-signature-mustard);
+}
+
+.headerRelayStatus[data-state="reconnecting"] .headerRelayStatusDot {
+  box-shadow: 0 0 0 3px rgba(217, 164, 65, 0.14);
+}
+
+.headerRelayStatus[data-state="disconnected"] {
+  color: var(--color-muted);
 }
 
 .headerSettingsButton {
@@ -227,11 +288,28 @@ p {
   gap: var(--space-md);
 }
 
+.runtimeSettingsHeader > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-xs);
+}
+
 .runtimeSettingsHeader h2 {
   color: var(--color-ink);
   font-size: 18px;
   font-weight: 700;
   line-height: 1.3;
+}
+
+.runtimeSettingsHeader p {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.workspacePathForm {
+  display: grid;
+  gap: var(--space-md);
 }
 
 .pageViewport {
@@ -411,6 +489,19 @@ p {
   font-weight: 600;
 }
 
+.sessionsStickyHeader {
+  position: sticky;
+  top: calc(-1 * var(--space-md));
+  z-index: 4;
+  display: grid;
+  gap: var(--space-md);
+  margin: calc(-1 * var(--space-md)) calc(-1 * var(--space-md)) 0;
+  border-bottom: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding: var(--space-md);
+  background: var(--color-canvas);
+}
+
 .miniIconButton {
   width: 30px;
   height: 30px;
@@ -430,7 +521,7 @@ p {
 
 .sessionTabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-xs);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-sm);
@@ -622,13 +713,13 @@ p {
 
 .unreadDot {
   position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 9px;
-  height: 9px;
+  top: -5px;
+  right: -5px;
+  width: 14px;
+  height: 14px;
   border: 2px solid var(--color-canvas);
   border-radius: var(--radius-pill);
-  background: var(--color-danger);
+  background: var(--color-unread);
 }
 
 .sessionOpenButton {
@@ -825,6 +916,7 @@ p {
   min-height: 0;
   flex-direction: column;
   gap: var(--space-md);
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -887,6 +979,7 @@ p {
   display: flex;
   align-items: flex-start;
   gap: var(--space-sm);
+  min-width: 0;
   max-width: 88%;
 }
 
@@ -900,32 +993,21 @@ p {
 }
 
 .messageBubble {
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
   border-radius: var(--radius-md);
   padding: var(--space-md);
   color: var(--color-body);
   font-size: 14px;
   line-height: 1.5;
+  overflow-x: hidden;
   overflow-wrap: anywhere;
 }
 
 .messageItem[data-role="user"] .messageBubble {
-  border-color: var(--color-primary);
   background: var(--color-primary);
   color: var(--color-canvas);
-}
-
-.eventMarker {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  margin-top: 14px;
-  border-radius: var(--radius-pill);
-  background: var(--color-border-strong);
-}
-
-.eventMarker.active {
-  background: var(--color-success);
-  animation: statusPulse 1.2s ease-in-out infinite;
 }
 
 .composerDock {
@@ -1034,6 +1116,17 @@ p {
   background: var(--color-canvas);
 }
 
+.attachmentFileIcon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xs);
+  color: var(--color-muted);
+  background: var(--color-canvas);
+}
+
 .attachmentPreview span {
   overflow: hidden;
   color: var(--color-body);
@@ -1058,6 +1151,7 @@ p {
   min-height: 30px;
   max-height: 86px;
   resize: none;
+  overflow-y: hidden;
   border: 0;
   padding: 2px 0;
   color: var(--color-ink);
@@ -1147,6 +1241,85 @@ p {
   background: var(--color-surface-soft);
 }
 
+.composerCompletionMenu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-sm));
+  left: 0;
+  z-index: 8;
+  display: grid;
+  max-height: 236px;
+  overflow-y: auto;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-xs);
+  background: var(--color-canvas);
+  box-shadow: 0 14px 36px rgb(0 0 0 / 22%);
+}
+
+.composerCompletionItem {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm);
+  color: var(--color-body);
+  background: transparent;
+  text-align: left;
+}
+
+.composerCompletionItem[aria-selected="true"],
+.composerCompletionItem:active {
+  color: var(--color-ink);
+  background: var(--color-surface-soft);
+}
+
+.composerCompletionIcon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xs);
+  color: var(--color-muted);
+  background: var(--color-canvas);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.composerCompletionItem strong,
+.composerCompletionItem small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composerCompletionItem strong {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.composerCompletionItem small {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.composerCompletionEmpty {
+  padding: var(--space-sm);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .sendButton {
   display: inline-flex;
   align-items: center;
@@ -1170,6 +1343,7 @@ p {
 
 .markdownContent {
   min-width: 0;
+  max-width: 100%;
 }
 
 .markdownContent > :first-child {
@@ -1200,9 +1374,11 @@ p {
   color: var(--color-ink);
   font-family: var(--font-mono);
   font-size: 0.92em;
+  overflow-wrap: anywhere;
 }
 
 .markdownContent pre {
+  min-width: 0;
   max-width: 100%;
   overflow-x: auto;
   border: 1px solid var(--color-hairline);
@@ -1213,8 +1389,17 @@ p {
 
 .markdownContent pre code {
   display: block;
+  width: max-content;
+  min-width: 100%;
   padding: 0;
   background: transparent;
+  overflow-wrap: normal;
+}
+
+.markdownContent table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .diffLine {
@@ -1327,6 +1512,56 @@ p {
   min-height: 44px;
 }
 
+.settingsToggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+  min-height: 44px;
+  color: var(--color-body);
+  font-size: 14px;
+}
+
+.settingsToggle[data-disabled="true"] {
+  opacity: 0.48;
+}
+
+.settingsToggle input {
+  width: 42px;
+  height: 24px;
+  appearance: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-strong);
+  cursor: pointer;
+}
+
+.settingsToggle input::before {
+  display: block;
+  width: 18px;
+  height: 18px;
+  margin: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--color-muted);
+  content: "";
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.settingsToggle input:checked {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+}
+
+.settingsToggle input:checked::before {
+  transform: translateX(18px);
+  background: var(--color-canvas);
+}
+
+.settingsToggle input:disabled {
+  cursor: not-allowed;
+}
+
 .limitGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1424,6 +1659,23 @@ p {
   min-width: 0;
 }
 
+.desktopDevicePicker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.settingsField small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .settingsField select {
   cursor: pointer;
 }
@@ -1448,6 +1700,12 @@ p {
   border-color: var(--color-border-strong);
   color: var(--color-ink);
   background: var(--color-surface-soft);
+}
+
+.inlineCopyButton {
+  width: fit-content;
+  min-width: 0;
+  min-height: 32px;
 }
 
 .settingsHelp {
@@ -1502,6 +1760,23 @@ p {
   background: var(--color-surface-soft);
 }
 
+.navIconWrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+
+.navUnreadDot {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-canvas);
+  border-radius: var(--radius-pill);
+  background: var(--color-unread);
+}
+
 @keyframes statusPulse {
   0%,
   100% {
@@ -1536,10 +1811,6 @@ p {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eventMarker.active {
-    animation: none;
-  }
-
   .sessionIconButton[data-working="true"] {
     animation: none;
   }

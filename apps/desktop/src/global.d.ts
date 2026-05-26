@@ -20,12 +20,18 @@ export interface ClipboardAttachmentResult {
   formats: string[];
 }
 
-export interface RemoteAttachmentInput {
-  kind: "image";
-  name: string;
-  mimeType: string;
-  dataUrl: string;
-}
+export type RemoteAttachmentInput =
+  | {
+      kind: "image";
+      name: string;
+      mimeType: string;
+      dataUrl: string;
+    }
+  | {
+      kind: "mention";
+      name: string;
+      path: string;
+    };
 
 export interface ComposerSuggestion {
   id: string;
