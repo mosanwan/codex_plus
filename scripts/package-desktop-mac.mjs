@@ -46,7 +46,7 @@ if (!existsSync(electronApp)) {
 await rm(stagingDir, { recursive: true, force: true });
 await rm(zipPath, { force: true });
 await rm(dmgPath, { force: true });
-await cp(electronApp, appPath, { recursive: true, preserveTimestamps: true });
+run("ditto", [electronApp, appPath]);
 
 const defaultAppAsar = path.join(appPath, "Contents", "Resources", "default_app.asar");
 await rm(defaultAppAsar, { force: true });
@@ -95,10 +95,7 @@ run("codesign", ["--force", "--deep", "--sign", "-", appPath]);
 run("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, zipPath]);
 
 await mkdir(dmgRoot, { recursive: true });
-await cp(appPath, path.join(dmgRoot, `${productName}.app`), {
-  recursive: true,
-  preserveTimestamps: true
-});
+run("ditto", [appPath, path.join(dmgRoot, `${productName}.app`)]);
 await symlink("/Applications", path.join(dmgRoot, "Applications"));
 run("hdiutil", [
   "create",
