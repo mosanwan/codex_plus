@@ -62,7 +62,8 @@ await installText(
   `#!/bin/sh
 set -eu
 
-OZONE_PLATFORM="\${CODEX_PLUS_OZONE_PLATFORM:-x11}"
+export CODEX_PLUS_OZONE_PLATFORM="\${CODEX_PLUS_OZONE_PLATFORM:-x11}"
+OZONE_PLATFORM="$CODEX_PLUS_OZONE_PLATFORM"
 CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM"
 if [ "$OZONE_PLATFORM" != "x11" ] && [ -z "\${CODEX_PLUS_DISABLE_WAYLAND_IME:-}" ]; then
   CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM --enable-wayland-ime --wayland-text-input-version=\${CODEX_PLUS_WAYLAND_TEXT_INPUT_VERSION:-3} --enable-features=\${CODEX_PLUS_ENABLE_FEATURES:-WaylandWindowDecorations}"
