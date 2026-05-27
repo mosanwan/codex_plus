@@ -50,6 +50,64 @@ export interface NotificationSoundFile {
   name: string;
 }
 
+export interface DesktopUpdateInfo {
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  downloadUrl?: string;
+  releaseNotes?: string;
+  checkedAt: number;
+}
+
+export type PeriodicTaskSessionMode = "existing" | "create_once";
+export type PeriodicTaskStatus = "idle" | "waiting" | "running" | "paused" | "error";
+export type PeriodicTaskPermissionMode = "default" | "auto-review" | "full-access";
+export type PeriodicTaskTrigger = "interval" | "schedule";
+export type PeriodicTaskScheduleFrequency = "daily" | "weekly";
+
+export interface PeriodicTask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  workspace: string;
+  sessionMode: PeriodicTaskSessionMode;
+  sessionId?: string;
+  prompt: string;
+  trigger: PeriodicTaskTrigger;
+  intervalMs: number;
+  scheduleFrequency: PeriodicTaskScheduleFrequency;
+  scheduleTime: string;
+  scheduleWeekdays: number[];
+  model?: string;
+  effort?: string | null;
+  permissionMode: PeriodicTaskPermissionMode;
+  nextRunAt?: number;
+  lastRunAt?: number;
+  lastCompletedAt?: number;
+  lastError?: string;
+  status: PeriodicTaskStatus;
+  activeTurnId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PeriodicTaskInput {
+  name: string;
+  enabled?: boolean;
+  workspace: string;
+  sessionMode: PeriodicTaskSessionMode;
+  sessionId?: string;
+  prompt: string;
+  trigger?: PeriodicTaskTrigger;
+  intervalMs: number;
+  scheduleFrequency?: PeriodicTaskScheduleFrequency;
+  scheduleTime?: string;
+  scheduleWeekdays?: number[];
+  model?: string;
+  effort?: string | null;
+  permissionMode?: PeriodicTaskPermissionMode;
+}
+
 declare global {
   interface Window {
     codexApp: {
@@ -64,6 +122,8 @@ declare global {
       readClipboardAttachments(): Promise<ClipboardAttachmentResult>;
       chooseAttachmentFiles(): Promise<ComposerAttachment[]>;
       chooseNotificationSoundFile(): Promise<NotificationSoundFile | null>;
+      checkForUpdates(): Promise<DesktopUpdateInfo>;
+      openUpdateDownload(url: string): Promise<void>;
       searchWorkspaceFiles(options: {
         cwd: string;
         query?: string;
@@ -129,6 +189,17 @@ declare global {
         requestId: string | number;
         decision: "accept" | "decline" | "cancel";
       }): Promise<void>;
+      listPeriodicTasks(): Promise<PeriodicTask[]>;
+      createPeriodicTask(input: PeriodicTaskInput): Promise<PeriodicTask>;
+      updatePeriodicTask(options: {
+        taskId: string;
+        patch: Partial<PeriodicTaskInput>;
+      }): Promise<PeriodicTask>;
+      deletePeriodicTask(options: { taskId: string }): Promise<void>;
+      runPeriodicTaskNow(options: { taskId: string }): Promise<PeriodicTask>;
+      onPeriodicTasksUpdated(
+        listener: (tasks: PeriodicTask[]) => void
+      ): () => void;
       onEvent(listener: (event: CodexAdapterEvent) => void): () => void;
     };
   }

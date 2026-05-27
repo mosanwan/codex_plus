@@ -26,6 +26,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.min
@@ -68,7 +70,7 @@ class RelayBackgroundService : Service() {
 
     private suspend fun connectFromSettings() {
         val settings = preferences.read()
-        lastEventId = settings.lastEventId
+        lastEventId = settings.backgroundLastEventId
         if (
             settings.relayEndpoint.isBlank() ||
             settings.relayApiKey.isBlank() ||
@@ -84,13 +86,14 @@ class RelayBackgroundService : Service() {
             endpoint = settings.relayEndpoint,
             apiKey = settings.relayApiKey,
             desktopDeviceId = settings.desktopDeviceId,
-            clientDeviceId = settings.clientDeviceId,
+            clientDeviceId = "${settings.clientDeviceId}:background",
+            backgroundMode = true,
             listener = object : RelayListener {
                 override fun onOpen() {
                     if (currentGeneration != generation) return
                     scope.launch {
                         reconnectAttempt = 0
-                        publish("client.resume_events", buildJsonObject { put("last_event_id", lastEventId) })
+                        publishResumeEvents()
                     }
                 }
 
@@ -134,7 +137,7 @@ class RelayBackgroundService : Service() {
                 val events = eventsFromBacklog(envelope.payload)
                 events.forEach { handleRelayEvent(it) }
                 if (events.isNotEmpty()) {
-                    publish("client.resume_events", buildJsonObject { put("last_event_id", lastEventId) })
+                    publishResumeEvents()
                 }
             }
         }
@@ -150,8 +153,18 @@ class RelayBackgroundService : Service() {
             notificationHelper.notifyTurnCompleted(event)
         }
         lastEventId = maxOf(lastEventId, event.id)
-        preferences.saveLastEventId(lastEventId)
+        preferences.saveBackgroundLastEventId(lastEventId)
         publish("event.ack", buildJsonObject { put("last_event_id", lastEventId) })
+    }
+
+    private fun publishResumeEvents() {
+        publish(
+            "client.resume_events",
+            buildJsonObject {
+                put("last_event_id", lastEventId)
+                put("types", buildJsonArray { add("turn.completed") })
+            }
+        )
     }
 
     private fun publish(type: String, payload: JsonObject = buildJsonObject { }) {

@@ -177,6 +177,42 @@ fun snapshotFromPayload(payload: JsonElement?): DesktopSnapshot? {
     )
 }
 
+fun messageFromPayload(payload: JsonElement?): Message? {
+    return (payload as? JsonObject)?.let(::messageFromJson)
+}
+
+fun progressSessionId(payload: JsonElement?): String {
+    return (payload as? JsonObject)?.string("sessionId").orEmpty()
+}
+
+fun progressIsWorking(payload: JsonElement?): Boolean? {
+    val root = payload as? JsonObject ?: return null
+    return (root["isWorking"] as? JsonPrimitive)?.booleanOrNull
+}
+
+fun progressMessage(payload: JsonElement?): Message? {
+    val root = payload as? JsonObject ?: return null
+    return root.objectOrNull("message")?.let(::messageFromJson)
+        ?: root.objectOrNull("event")?.let(::messageFromJson)
+}
+
+fun desktopEventMessage(payload: JsonElement?): Pair<String, Message>? {
+    val event = (payload as? JsonObject)?.objectOrNull("event") ?: return null
+    val sessionId = event.string("threadId")
+    val text = listOf("patch", "diff", "plan", "summary")
+        .firstNotNullOfOrNull { key -> event.optionalString(key)?.takeIf { it.isNotBlank() } }
+        ?: return null
+    val type = event.string("type").ifBlank { "desktop.event" }
+    val turnId = event.string("turnId")
+    val id = "event-$type-${turnId.ifBlank { sessionId.ifBlank { text.hashCode().toString() } }}"
+    return sessionId to Message(
+        id = id,
+        role = "event",
+        text = text,
+        meta = type
+    )
+}
+
 private fun deviceFromJson(root: JsonObject): Device {
     return Device(
         id = root.string("id"),
@@ -217,17 +253,21 @@ private fun sessionsFromJson(value: JsonElement): List<Session> {
 }
 
 private fun messagesFromJson(value: JsonElement): List<Message> {
-    return value.jsonArray.takeLast(ParsedMessageLimit).mapNotNull { it as? JsonObject }.mapNotNull { root ->
-        val id = root.string("id")
-        if (id.isBlank()) return@mapNotNull null
-        Message(
-            id = id,
-            role = root.string("role"),
-            text = root.string("text"),
-            meta = root.string("meta"),
-            attachments = root["attachments"]?.let(::attachmentsFromJson).orEmpty()
-        )
-    }
+    return value.jsonArray.takeLast(ParsedMessageLimit)
+        .mapNotNull { it as? JsonObject }
+        .mapNotNull(::messageFromJson)
+}
+
+private fun messageFromJson(root: JsonObject): Message? {
+    val id = root.string("id")
+    if (id.isBlank()) return null
+    return Message(
+        id = id,
+        role = root.string("role"),
+        text = root.string("text"),
+        meta = root.string("meta"),
+        attachments = root["attachments"]?.let(::attachmentsFromJson).orEmpty()
+    )
 }
 
 private fun attachmentsFromJson(value: JsonElement): List<MessageAttachment> {

@@ -183,6 +183,38 @@ In Linux containers where Electron's SUID sandbox is not configured, use:
 npm run start:no-sandbox -w @codep/desktop
 ```
 
+### Desktop Update Check
+
+On startup, the desktop app requests an update manifest. If the remote version is
+newer than `app.getVersion()`, the sidebar shows a download prompt. The default
+manifest URL is:
+
+```text
+https://codex-bridge.three.ink/codex-plus/desktop/latest.json
+```
+
+Override or disable it with environment variables:
+
+```bash
+CODEX_PLUS_UPDATE_MANIFEST_URL=https://example.com/codex-plus/latest.json npm run start -w @codep/desktop
+CODEX_PLUS_DISABLE_UPDATE_CHECK=1 npm run start -w @codep/desktop
+```
+
+Manifest example:
+
+```json
+{
+  "version": "0.1.17",
+  "releaseNotes": "Bug fixes and packaging updates.",
+  "downloads": {
+    "macos-arm64": { "url": "https://example.com/codex-plus_0.1.17_macos_arm64.dmg" },
+    "macos-x64": { "url": "https://example.com/codex-plus_0.1.17_macos_x64.dmg" },
+    "windows-x64": { "url": "https://example.com/codex-plus_0.1.17_windows_x64.zip" },
+    "deb-amd64": { "url": "https://example.com/codex-plus_0.1.17_amd64.deb" }
+  }
+}
+```
+
 Start the mobile web app for browser testing:
 
 ```bash

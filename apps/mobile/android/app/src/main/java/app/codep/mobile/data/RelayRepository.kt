@@ -44,6 +44,7 @@ class RelayRepository : Closeable {
         apiKey: String,
         desktopDeviceId: String,
         clientDeviceId: String,
+        backgroundMode: Boolean = false,
         listener: RelayListener
     ): RelayConnection {
         val url = relayWebSocketUrl(
@@ -51,7 +52,8 @@ class RelayRepository : Closeable {
             role = "client",
             deviceId = desktopDeviceId,
             apiKey = apiKey,
-            clientDeviceId = clientDeviceId
+            clientDeviceId = clientDeviceId,
+            backgroundMode = backgroundMode
         ) ?: throw IllegalArgumentException("Invalid relay endpoint")
         val request = Request.Builder().url(url).build()
         val socket = client.newWebSocket(
@@ -126,15 +128,20 @@ private fun relayWebSocketUrl(
     role: String,
     deviceId: String,
     apiKey: String,
-    clientDeviceId: String
+    clientDeviceId: String,
+    backgroundMode: Boolean = false
 ): String? {
     val base = relayHttpBaseUrl(endpoint) ?: return null
     val path = base.encodedPath.trimEnd('/')
-    val httpUrl = base.newBuilder()
+    val builder = base.newBuilder()
         .encodedPath("$path/ws/$role")
         .addQueryParameter("device_id", deviceId)
         .addQueryParameter("api_key", apiKey)
         .addQueryParameter("client_device_id", clientDeviceId)
+    if (role == "client" && backgroundMode) {
+        builder.addQueryParameter("background", "1")
+    }
+    val httpUrl = builder
         .build()
         .toString()
     return when {

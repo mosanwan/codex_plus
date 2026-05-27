@@ -166,6 +166,36 @@ npm run start -w @codep/desktop
 npm run start:no-sandbox -w @codep/desktop
 ```
 
+### 桌面端版本检测
+
+桌面端启动后会请求版本 manifest，发现远端版本高于当前 `app.getVersion()` 时，在侧边栏提示用户下载。默认地址是：
+
+```text
+https://codex-bridge.three.ink/codex-plus/desktop/latest.json
+```
+
+可以用环境变量覆盖或关闭：
+
+```bash
+CODEX_PLUS_UPDATE_MANIFEST_URL=https://example.com/codex-plus/latest.json npm run start -w @codep/desktop
+CODEX_PLUS_DISABLE_UPDATE_CHECK=1 npm run start -w @codep/desktop
+```
+
+Manifest 示例：
+
+```json
+{
+  "version": "0.1.17",
+  "releaseNotes": "Bug fixes and packaging updates.",
+  "downloads": {
+    "macos-arm64": { "url": "https://example.com/codex-plus_0.1.17_macos_arm64.dmg" },
+    "macos-x64": { "url": "https://example.com/codex-plus_0.1.17_macos_x64.dmg" },
+    "windows-x64": { "url": "https://example.com/codex-plus_0.1.17_windows_x64.zip" },
+    "deb-amd64": { "url": "https://example.com/codex-plus_0.1.17_amd64.deb" }
+  }
+}
+```
+
 启动移动端 Web 开发服务：
 
 ```bash

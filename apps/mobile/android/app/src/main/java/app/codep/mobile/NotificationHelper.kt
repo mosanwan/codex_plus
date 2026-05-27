@@ -53,7 +53,8 @@ class NotificationHelper(private val context: Context) {
         ensureChannel()
         val sessionTitle = event.payloadText("session_title")
         val title = event.title?.takeIf { it.isNotBlank() } ?: sessionTitle ?: "Codex+"
-        val body = event.payloadText("final_message")
+        val body = event.payloadText("notification_body")
+            ?: event.payloadText("final_message")
             ?: event.body?.takeIf { it.isNotBlank() }
             ?: sessionTitle?.let { "$it completed." }
             ?: "A Codex turn completed."

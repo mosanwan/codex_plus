@@ -1,9 +1,11 @@
 import {
   ArrowUp,
   AtSign,
+  CalendarClock,
   ChevronRight,
   Check,
   Copy,
+  Download,
   FolderOpen,
   Languages,
   MoreHorizontal,
@@ -11,8 +13,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
+  Pause,
   Pencil,
+  Play,
   Plus,
+  RotateCw,
   Settings,
   Square,
   Star,
@@ -33,6 +38,7 @@ import type {
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
+import type { DesktopUpdateInfo, PeriodicTask, PeriodicTaskInput } from "./global";
 import defaultNotificationSoundUrl from "../zelda-chest.wav?url";
 import desktopPackage from "../package.json";
 
@@ -42,6 +48,8 @@ interface SessionView {
   updatedAt?: number;
   status?: string;
 }
+
+type WorkspaceSessionMap = Record<string, SessionView[]>;
 
 interface TranscriptEntry {
   id: string;
@@ -80,6 +88,12 @@ interface ComposerAttachment {
   path: string;
   name: string;
   previewDataUrl?: string;
+}
+
+interface QueuedRemoteTurn {
+  text: string;
+  attachments: ComposerAttachment[];
+  session: SessionView;
 }
 
 interface ClipboardAttachmentResult {
@@ -129,6 +143,7 @@ type ThemeMode = "dark" | "light";
 type ModelEffort = "low" | "medium" | "high" | "xhigh";
 type ComposerCompletionMode = "file" | "skill";
 type UILanguage = "en" | "zh-CN";
+type MainView = "conversation" | "tasks";
 
 interface ComposerCompletionState {
   mode: ComposerCompletionMode;
@@ -200,6 +215,14 @@ interface RemoteSnapshotMessage {
   meta?: string;
 }
 
+interface RelayProgressPayload {
+  sessionId: string;
+  turnId: string;
+  isWorking?: boolean;
+  message?: RemoteSnapshotMessage;
+  event?: RemoteSnapshotMessage;
+}
+
 interface RemoteSnapshotWorkspace {
   path: string;
   name: string;
@@ -220,6 +243,7 @@ interface RemoteSnapshotWorkspace {
 const WORKSPACE_STORAGE_KEY = "codep.lastWorkspace";
 const WORKSPACES_STORAGE_KEY = "codep.workspaces";
 const SESSION_STORAGE_KEY = "codep.sessionsByWorkspace";
+const SESSION_LIST_CACHE_STORAGE_KEY = "codep.sessionListCacheByWorkspace";
 const SESSION_TITLE_OVERRIDES_STORAGE_KEY = "codep.sessionTitleOverrides";
 const SESSION_ICON_OVERRIDES_STORAGE_KEY = "codep.sessionIconOverrides";
 const FAVORITE_SESSIONS_STORAGE_KEY = "codep.favoriteSessions";
@@ -238,6 +262,7 @@ const UNREAD_SESSIONS_STORAGE_KEY = "codep.unreadSessions";
 const SOUND_NOTIFICATIONS_STORAGE_KEY = "codep.soundNotifications";
 const NOTIFICATION_SOUND_FILE_STORAGE_KEY = "codep.notificationSoundFile";
 const NOTIFICATION_SOUND_VOLUME_STORAGE_KEY = "codep.notificationSoundVolume";
+const UPDATE_DISMISSED_STORAGE_KEY = "codep.dismissedUpdateVersion";
 const DEFAULT_NOTIFICATION_SOUND_FILE: NotificationSoundFile = {
   path: "bundled://zelda-chest.wav",
   url: defaultNotificationSoundUrl,
@@ -247,9 +272,13 @@ const DEFAULT_NOTIFICATION_SOUND_VOLUME = 70;
 const APP_VERSION_LABEL = `v${desktopPackage.version}`;
 const INITIAL_VISIBLE_TRANSCRIPT_COUNT = 40;
 const TRANSCRIPT_PAGE_SIZE = 40;
+const BACKGROUND_SESSION_REFRESH_DELAY_MS = 350;
 const RELIABLE_RELAY_RETRY_MS = 5000;
 const DESKTOP_SNAPSHOT_DEBOUNCE_MS = 500;
-const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 750;
+const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 10_000;
+const RELAY_EVENT_TEXT_MAX_CHARS = 1200;
+const RELAY_MESSAGE_TEXT_MAX_CHARS = 4000;
+const RELAY_PROGRESS_DEBOUNCE_MS = 1000;
 const RELAY_RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 30000] as const;
 const RELAY_RECONNECT_JITTER_MS = 500;
 const RELAY_STABLE_CONNECTION_MS = 30000;
@@ -283,6 +312,10 @@ const UI_TEXT = {
     conversation: "Conversation",
     newCodexSession: "New Codex session",
     openSettings: "Open settings",
+    updateAvailable: "Update available",
+    updateAvailableBody: "Version {version} is ready to download.",
+    downloadUpdate: "Download",
+    dismissUpdate: "Dismiss update notice",
     startSessionTitle: "Start a local Codex session",
     startSessionBody: "Add workspaces on the left, then open or create a session under any workspace.",
     loadingSessionTitle: "Loading session",
@@ -327,6 +360,42 @@ const UI_TEXT = {
     settings: "Settings",
     settingsIntro: "Configure remote access for desktop and mobile clients.",
     closeSettings: "Close settings",
+    periodicTasks: "Automations",
+    openPeriodicTasks: "Open automations",
+    periodicTasksIntro: "Run a prompt by interval or on a fixed daily/weekly schedule.",
+    newTask: "New task",
+    taskName: "Task name",
+    targetWorkspace: "Workspace",
+    targetSession: "Target session",
+    sessionMode: "Session mode",
+    existingSession: "Existing session",
+    dedicatedSession: "Dedicated session",
+    triggerType: "Trigger",
+    triggerInterval: "After completion",
+    triggerSchedule: "Fixed time",
+    intervalMinutes: "Interval minutes",
+    scheduleFrequency: "Schedule",
+    scheduleDaily: "Every day",
+    scheduleWeekly: "Weekly",
+    scheduleTime: "Time",
+    scheduleWeekdays: "Weekdays",
+    taskPrompt: "Prompt",
+    enabled: "Enabled",
+    runNow: "Run now",
+    pause: "Pause",
+    resume: "Resume",
+    deleteTask: "Delete task",
+    saveTask: "Save task",
+    createTask: "Create task",
+    noTasks: "No automations",
+    noTasksBody: "Create a task that runs by interval or at a fixed time.",
+    lastRun: "Last run",
+    nextRun: "Next run",
+    openTaskSession: "Open session",
+    taskSessionPending: "Created when the first run starts.",
+    taskSaved: "Automation saved.",
+    taskDeleted: "Automation deleted.",
+    taskStarted: "Automation queued.",
     appearance: "Appearance",
     appearanceIntro: "Choose the theme and language for desktop UI surfaces.",
     theme: "Theme",
@@ -441,6 +510,10 @@ const UI_TEXT = {
     conversation: "对话",
     newCodexSession: "新的 Codex Session",
     openSettings: "打开设置",
+    updateAvailable: "发现新版本",
+    updateAvailableBody: "{version} 版本已可下载。",
+    downloadUpdate: "下载",
+    dismissUpdate: "关闭版本提示",
     startSessionTitle: "开始本地 Codex Session",
     startSessionBody: "在左侧添加工作区，然后打开或创建该工作区下的 Session。",
     loadingSessionTitle: "正在加载 Session",
@@ -485,6 +558,42 @@ const UI_TEXT = {
     settings: "设置",
     settingsIntro: "配置桌面端和移动端的远程访问。",
     closeSettings: "关闭设置",
+    periodicTasks: "自动任务",
+    openPeriodicTasks: "打开自动任务",
+    periodicTasksIntro: "按完成后的间隔运行，或按每天/每周固定时间运行同一条 Prompt。",
+    newTask: "新建任务",
+    taskName: "任务名称",
+    targetWorkspace: "工作区",
+    targetSession: "目标 Session",
+    sessionMode: "Session 模式",
+    existingSession: "已有 Session",
+    dedicatedSession: "专用 Session",
+    triggerType: "触发方式",
+    triggerInterval: "完成后间隔",
+    triggerSchedule: "固定时间",
+    intervalMinutes: "间隔分钟",
+    scheduleFrequency: "定时规则",
+    scheduleDaily: "每天",
+    scheduleWeekly: "每周",
+    scheduleTime: "时间",
+    scheduleWeekdays: "周几",
+    taskPrompt: "Prompt",
+    enabled: "启用",
+    runNow: "立即运行",
+    pause: "暂停",
+    resume: "恢复",
+    deleteTask: "删除任务",
+    saveTask: "保存任务",
+    createTask: "创建任务",
+    noTasks: "还没有自动任务",
+    noTasksBody: "创建一个按间隔或固定时间运行的任务。",
+    lastRun: "上次运行",
+    nextRun: "下次运行",
+    openTaskSession: "打开 Session",
+    taskSessionPending: "第一次运行时创建。",
+    taskSaved: "自动任务已保存。",
+    taskDeleted: "自动任务已删除。",
+    taskStarted: "自动任务已排队。",
     appearance: "外观",
     appearanceIntro: "选择桌面端界面的主题和语言。",
     theme: "主题",
@@ -629,6 +738,15 @@ const EFFORT_OPTIONS: Array<{
   { value: "high", label: "High", description: "Deeper reasoning for harder tasks." },
   { value: "xhigh", label: "XHigh", description: "Maximum reasoning depth." }
 ];
+const WEEKDAY_OPTIONS = [
+  { value: 1, en: "Mon", zh: "周一" },
+  { value: 2, en: "Tue", zh: "周二" },
+  { value: 3, en: "Wed", zh: "周三" },
+  { value: 4, en: "Thu", zh: "周四" },
+  { value: 5, en: "Fri", zh: "周五" },
+  { value: 6, en: "Sat", zh: "周六" },
+  { value: 0, en: "Sun", zh: "周日" }
+];
 const SESSION_ICON_IDS = [
   "terminal",
   "code",
@@ -671,7 +789,6 @@ const SESSION_ICON_IDS = [
   "brush",
   "grid"
 ] as const;
-const NOTIFICATION_BODY_MAX_CHARS = 100;
 type SessionIconId = (typeof SESSION_ICON_IDS)[number];
 const DEMO_MODE =
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
@@ -741,10 +858,13 @@ export function App() {
   const [session, setSession] = useState<SessionView | null>(
     DEMO_MODE ? DEMO_SESSION : null
   );
-  const [workspaceSessions, setWorkspaceSessions] = useState<
-    Record<string, SessionView[]>
-  >(
-    DEMO_MODE ? { [DEMO_WORKSPACE]: [DEMO_SESSION] } : {}
+  const [workspaceSessions, setWorkspaceSessions] = useState<WorkspaceSessionMap>(
+    DEMO_MODE
+      ? { [DEMO_WORKSPACE]: [DEMO_SESSION] }
+      : readCachedWorkspaceSessions(
+          readSavedWorkspaces(),
+          new Set(readStringList(HIDDEN_SESSIONS_STORAGE_KEY))
+        )
   );
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("recent");
   const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
@@ -821,6 +941,15 @@ export function App() {
   );
   const [scrollRequest, setScrollRequest] = useState(0);
   const [historyLoadRequest, setHistoryLoadRequest] = useState(0);
+  const [mainView, setMainView] = useState<MainView>("conversation");
+  const [periodicTasks, setPeriodicTasks] = useState<PeriodicTask[]>([]);
+  const [selectedPeriodicTaskId, setSelectedPeriodicTaskId] = useState<string | null>(
+    null
+  );
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateInfo | null>(null);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(
+    () => window.localStorage.getItem(UPDATE_DISMISSED_STORAGE_KEY) ?? ""
+  );
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const relaySocketRef = useRef<WebSocket | null>(null);
   const relayReconnectTimerRef = useRef<number | null>(null);
@@ -837,8 +966,11 @@ export function App() {
   const activeSessionRef = useRef<SessionView | null>(session);
   const activeWorkspaceRef = useRef<string | null>(workspace);
   const workspaceSessionsRef = useRef<Record<string, SessionView[]>>(workspaceSessions);
+  const sessionRefreshPromisesRef = useRef<Record<string, Promise<SessionView[]>>>({});
+  const sessionsLoadingCountRef = useRef(0);
   const hiddenSessionIdsRef = useRef<Set<string>>(hiddenSessionIds);
   const runningTurnsBySessionRef = useRef<Record<string, string>>(runningTurnsBySession);
+  const queuedRemoteTurnsRef = useRef<Record<string, QueuedRemoteTurn[]>>({});
   const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
   const turnAssistantTextRef = useRef<Record<string, { turnId: string; text: string }>>(
     {}
@@ -847,6 +979,8 @@ export function App() {
   const latestDesktopSnapshotRef = useRef<unknown>(null);
   const desktopSnapshotTimerRef = useRef<number | null>(null);
   const reliableSnapshotTimerRef = useRef<number | null>(null);
+  const relayProgressTimerRef = useRef<number | null>(null);
+  const pendingRelayProgressRef = useRef<Record<string, RelayProgressPayload>>({});
   const lastReliableSnapshotSignatureRef = useRef("");
   const processedClientCommandIdsRef = useRef<Set<string>>(
     new Set(readStringList(CLIENT_COMMAND_IDS_STORAGE_KEY))
@@ -908,6 +1042,12 @@ export function App() {
   const relayStatusTooltip = `${t("relay")}: ${relayState}. ${relayStatusMessage}`;
   const RelayStatusIcon =
     relayState === "connected" || relayState === "connecting" ? Wifi : WifiOff;
+  const visibleDesktopUpdate =
+    desktopUpdate?.updateAvailable &&
+    desktopUpdate.downloadUrl &&
+    desktopUpdate.latestVersion !== dismissedUpdateVersion
+      ? desktopUpdate
+      : null;
 
   relayCommandHandlerRef.current = data => {
     void handleRelayMessage(data);
@@ -960,6 +1100,53 @@ export function App() {
   useEffect(() => {
     turnStartedAtBySessionRef.current = turnStartedAtBySession;
   }, [turnStartedAtBySession]);
+
+  useEffect(() => {
+    if (DEMO_MODE || !desktopApi) {
+      return undefined;
+    }
+
+    let disposed = false;
+    void desktopApi.listPeriodicTasks().then(tasks => {
+      if (!disposed) {
+        setPeriodicTasks(tasks);
+      }
+    }).catch(error => {
+      if (!disposed) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    });
+
+    const unsubscribe = desktopApi.onPeriodicTasksUpdated(tasks => {
+      setPeriodicTasks(tasks);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [desktopApi]);
+
+  useEffect(() => {
+    if (DEMO_MODE || !desktopApi) {
+      return;
+    }
+
+    let disposed = false;
+    void desktopApi.checkForUpdates()
+      .then(info => {
+        if (!disposed && info.updateAvailable) {
+          setDesktopUpdate(info);
+        }
+      })
+      .catch(() => {
+        // Update checks should not interrupt the local workflow.
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [desktopApi]);
 
   useEffect(() => {
     if (Object.keys(runningTurnsBySession).length === 0) {
@@ -1025,6 +1212,49 @@ export function App() {
     });
   }
 
+  function enqueueRemoteTurn(threadId: string, turn: QueuedRemoteTurn) {
+    const queue = queuedRemoteTurnsRef.current[threadId] ?? [];
+    queuedRemoteTurnsRef.current = {
+      ...queuedRemoteTurnsRef.current,
+      [threadId]: [...queue, turn]
+    };
+    setStatus("Mobile message queued until the current turn completes.");
+  }
+
+  function shiftQueuedRemoteTurn(threadId: string): QueuedRemoteTurn | null {
+    const queue = queuedRemoteTurnsRef.current[threadId] ?? [];
+    const [nextTurn, ...remaining] = queue;
+    if (!nextTurn) {
+      return null;
+    }
+
+    if (remaining.length > 0) {
+      queuedRemoteTurnsRef.current = {
+        ...queuedRemoteTurnsRef.current,
+        [threadId]: remaining
+      };
+    } else {
+      const nextQueues = { ...queuedRemoteTurnsRef.current };
+      delete nextQueues[threadId];
+      queuedRemoteTurnsRef.current = nextQueues;
+    }
+    return nextTurn;
+  }
+
+  function sendNextQueuedRemoteTurn(threadId: string) {
+    const queuedTurn = shiftQueuedRemoteTurn(threadId);
+    if (!queuedTurn) {
+      return;
+    }
+    setStatus("Sending queued mobile message.");
+    void sendTurnRequest(
+      queuedTurn.text,
+      queuedTurn.attachments,
+      queuedTurn.session,
+      { clearLocalComposer: false }
+    );
+  }
+
   function updateTranscriptForActiveThread(
     threadId: string | null | undefined,
     updater: (previous: TranscriptEntry[]) => TranscriptEntry[]
@@ -1063,7 +1293,7 @@ export function App() {
       if (!isHighFrequencyRelayEvent(event)) {
         publishRelay({
           type: "desktop.event",
-          payload: { event }
+          payload: { event: relayEventFromCodexEvent(event) }
         });
       }
 
@@ -1089,6 +1319,12 @@ export function App() {
 
       if (event.type === "message.delta") {
         appendTurnAssistantText(event.threadId, event.turnId, event.text);
+        scheduleRelayProgress(event.threadId, {
+          sessionId: event.threadId,
+          turnId: event.turnId,
+          isWorking: true,
+          message: relayAssistantProgressMessage(event.threadId, event.turnId)
+        });
         updateTranscriptForActiveThread(event.threadId, previous =>
           appendAssistantDelta(previous, event.text)
         );
@@ -1167,6 +1403,7 @@ export function App() {
       }
 
       if (event.type === "turn.completed") {
+        flushRelayProgress();
         clearSessionTurnRunning(event.threadId);
         handleTurnCompletedReminder(event.threadId);
         publishTurnCompletedEvent(event);
@@ -1178,6 +1415,7 @@ export function App() {
         if (isActiveEventThread(event.threadId)) {
           setStatus("Turn completed.");
         }
+        sendNextQueuedRemoteTurn(event.threadId);
       }
     });
   }, [
@@ -1406,7 +1644,6 @@ export function App() {
     sessionIconOverrides,
     sessions,
     status,
-    transcript,
     unreadSessionIds,
     lastTurnDurationBySession,
     modelOptions,
@@ -1422,6 +1659,9 @@ export function App() {
       }
       if (reliableSnapshotTimerRef.current !== null) {
         window.clearTimeout(reliableSnapshotTimerRef.current);
+      }
+      if (relayProgressTimerRef.current !== null) {
+        window.clearTimeout(relayProgressTimerRef.current);
       }
     };
   }, []);
@@ -1533,12 +1773,25 @@ export function App() {
       return;
     }
 
-    for (const cwd of workspaces) {
-      void refreshSessions(cwd, {
-        openPreferred: cwd === workspace && session === null
+    const activeWorkspace = workspace ?? workspaces[0] ?? null;
+    if (activeWorkspace) {
+      void refreshSessions(activeWorkspace, {
+        openPreferred: activeWorkspace === workspace && activeSessionRef.current === null
       });
     }
-  }, [connectionState, desktopApi, session, workspace, workspaces]);
+
+    const timers = workspaces
+      .filter(cwd => cwd !== activeWorkspace)
+      .map((cwd, index) =>
+        window.setTimeout(() => {
+          void refreshSessions(cwd, { openPreferred: false });
+        }, BACKGROUND_SESSION_REFRESH_DELAY_MS * (index + 1))
+      );
+
+    return () => {
+      timers.forEach(timer => window.clearTimeout(timer));
+    };
+  }, [connectionState, desktopApi, workspace, workspaces]);
 
   useEffect(() => {
     function clearActiveUnreadWhenFocused() {
@@ -1698,7 +1951,7 @@ export function App() {
       setApprovals([]);
       setStatus(`Selected workspace ${workspaceName(cwd)}.`);
     }
-    if (connectionState === "connected" && !workspaceSessions[cwd]) {
+    if (connectionState === "connected") {
       void refreshSessions(cwd, { openPreferred: false });
     }
   }
@@ -1736,6 +1989,8 @@ export function App() {
     setWorkspaceSessions(previous => {
       const next = { ...previous };
       delete next[cwd];
+      workspaceSessionsRef.current = next;
+      writeCachedWorkspaceSessions(next);
       return next;
     });
     setFavoriteSessionIds(previous => {
@@ -1823,10 +2078,15 @@ export function App() {
       saveStringList(HIDDEN_SESSIONS_STORAGE_KEY, Array.from(next));
       return next;
     });
-    setWorkspaceSessions(previous => ({
-      ...previous,
-      [cwd]: (previous[cwd] ?? []).filter(item => item.threadId !== target.threadId)
-    }));
+    setWorkspaceSessions(previous => {
+      const next = {
+        ...previous,
+        [cwd]: (previous[cwd] ?? []).filter(item => item.threadId !== target.threadId)
+      };
+      workspaceSessionsRef.current = next;
+      writeCachedWorkspaceSessions(next);
+      return next;
+    });
     setFavoriteSessionIds(previous => {
       if (!previous.has(target.threadId)) {
         return previous;
@@ -1915,12 +2175,17 @@ export function App() {
       ...readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY),
       [target.threadId]: nextTitle
     });
-    setWorkspaceSessions(previous => ({
-      ...previous,
-      [cwd]: (previous[cwd] ?? []).map(item =>
-        item.threadId === target.threadId ? renamedSession : item
-      )
-    }));
+    setWorkspaceSessions(previous => {
+      const next = {
+        ...previous,
+        [cwd]: (previous[cwd] ?? []).map(item =>
+          item.threadId === target.threadId ? renamedSession : item
+        )
+      };
+      workspaceSessionsRef.current = next;
+      writeCachedWorkspaceSessions(next);
+      return next;
+    });
 
     if (session?.threadId === target.threadId) {
       setSession(renamedSession);
@@ -1944,7 +2209,6 @@ export function App() {
     setStatus("Starting local Codex app-server.");
     try {
       const response = await desktopApi.connect();
-      await refreshModelOptions();
       setConnectionState("connected");
       setStatus(`Connected: ${response.userAgent}`);
     } catch (error) {
@@ -2048,6 +2312,7 @@ export function App() {
       return;
     }
 
+    setMainView("conversation");
     setStatus("Creating Codex thread.");
     setIsSessionOpening(true);
     try {
@@ -2087,10 +2352,15 @@ export function App() {
       setSession(nextSession);
       clearSessionUnread(nextSession.threadId);
       saveSession(workspace, nextSession);
-      setWorkspaceSessions(previous => ({
-        ...previous,
-        [workspace]: upsertSession(previous[workspace] ?? [], nextSession)
-      }));
+      setWorkspaceSessions(previous => {
+        const next = {
+          ...previous,
+          [workspace]: upsertSession(previous[workspace] ?? [], nextSession)
+        };
+        workspaceSessionsRef.current = next;
+        writeCachedWorkspaceSessions(next);
+        return next;
+      });
       resetVisibleTranscriptWindow();
       setTranscript([
         ...transcriptFromThread(response.thread),
@@ -2125,6 +2395,7 @@ export function App() {
       return;
     }
 
+    setMainView("conversation");
     setIsSessionOpening(true);
     setStatus("Creating new Codex session.");
     try {
@@ -2144,10 +2415,15 @@ export function App() {
       setSession(nextSession);
       clearSessionUnread(nextSession.threadId);
       saveSession(cwd, nextSession);
-      setWorkspaceSessions(previous => ({
-        ...previous,
-        [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
-      }));
+      setWorkspaceSessions(previous => {
+        const next = {
+          ...previous,
+          [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
+        };
+        workspaceSessionsRef.current = next;
+        writeCachedWorkspaceSessions(next);
+        return next;
+      });
       resetVisibleTranscriptWindow();
       setTranscript([
         systemEntry(`New session started in ${cwd}`)
@@ -2166,6 +2442,7 @@ export function App() {
       return;
     }
 
+    setMainView("conversation");
     window.localStorage.setItem(WORKSPACE_STORAGE_KEY, cwd);
     setWorkspace(cwd);
     setSession(target);
@@ -2199,10 +2476,15 @@ export function App() {
       setSession(nextSession);
       clearSessionUnread(nextSession.threadId);
       saveSession(cwd, nextSession);
-      setWorkspaceSessions(previous => ({
-        ...previous,
-        [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
-      }));
+      setWorkspaceSessions(previous => {
+        const next = {
+          ...previous,
+          [cwd]: upsertSession(previous[cwd] ?? [], nextSession)
+        };
+        workspaceSessionsRef.current = next;
+        writeCachedWorkspaceSessions(next);
+        return next;
+      });
       resetVisibleTranscriptWindow();
       setTranscript([
         ...transcriptFromThread(response.thread),
@@ -2238,21 +2520,8 @@ export function App() {
       return;
     }
 
-    setIsSessionsLoading(true);
     try {
-      const response = await desktopApi.listThreads({ cwd });
-      const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
-      const listedSessions = response.data
-        .map(thread => ({
-          threadId: thread.id,
-          title: titleOverrides[thread.id] ?? thread.preview ?? thread.name ?? workspaceName(cwd),
-          updatedAt: thread.updatedAt,
-          status:
-            typeof thread.status === "string"
-              ? thread.status
-              : JSON.stringify(thread.status)
-        }))
-        .filter(item => !hiddenSessionIdsRef.current.has(item.threadId));
+      const listedSessions = await listWorkspaceSessions(cwd);
       const preservedSession =
         options.preserveSession ??
         (cwd === activeWorkspaceRef.current ? activeSessionRef.current : null);
@@ -2262,10 +2531,15 @@ export function App() {
         !listedSessions.some(item => item.threadId === preservedSession.threadId)
           ? upsertSession(listedSessions, preservedSession)
           : listedSessions;
-      setWorkspaceSessions(previous => ({
-        ...previous,
-        [cwd]: nextSessions
-      }));
+      setWorkspaceSessions(previous => {
+        const next = {
+          ...previous,
+          [cwd]: nextSessions
+        };
+        workspaceSessionsRef.current = next;
+        writeCachedWorkspaceSessions(next);
+        return next;
+      });
 
       if (options.openPreferred) {
         const savedSession = readSavedSession(cwd);
@@ -2280,9 +2554,141 @@ export function App() {
       }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsSessionsLoading(false);
     }
+  }
+
+  function listWorkspaceSessions(cwd: string): Promise<SessionView[]> {
+    if (!desktopApi) {
+      return Promise.resolve([]);
+    }
+
+    const existing = sessionRefreshPromisesRef.current[cwd];
+    if (existing) {
+      return existing;
+    }
+
+    beginSessionsLoading();
+    const promise = desktopApi.listThreads({ cwd })
+      .then(response => {
+        const titleOverrides = readStringMap(SESSION_TITLE_OVERRIDES_STORAGE_KEY);
+        return response.data
+          .map(thread => ({
+            threadId: thread.id,
+            title:
+              titleOverrides[thread.id] ??
+              thread.preview ??
+              thread.name ??
+              workspaceName(cwd),
+            updatedAt: thread.updatedAt,
+            status:
+              typeof thread.status === "string"
+                ? thread.status
+                : JSON.stringify(thread.status)
+          }))
+          .filter(item => !hiddenSessionIdsRef.current.has(item.threadId));
+      })
+      .finally(() => {
+        const next = { ...sessionRefreshPromisesRef.current };
+        delete next[cwd];
+        sessionRefreshPromisesRef.current = next;
+        endSessionsLoading();
+      });
+
+    sessionRefreshPromisesRef.current = {
+      ...sessionRefreshPromisesRef.current,
+      [cwd]: promise
+    };
+    return promise;
+  }
+
+  function beginSessionsLoading() {
+    sessionsLoadingCountRef.current += 1;
+    setIsSessionsLoading(true);
+  }
+
+  function endSessionsLoading() {
+    sessionsLoadingCountRef.current = Math.max(0, sessionsLoadingCountRef.current - 1);
+    setIsSessionsLoading(sessionsLoadingCountRef.current > 0);
+  }
+
+  async function savePeriodicTask(
+    input: PeriodicTaskInput,
+    taskId?: string | null
+  ) {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      const task = taskId
+        ? await desktopApi.updatePeriodicTask({ taskId, patch: input })
+        : await desktopApi.createPeriodicTask(input);
+      setSelectedPeriodicTaskId(task.id);
+      setStatus(t("taskSaved"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function togglePeriodicTask(task: PeriodicTask) {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      await desktopApi.updatePeriodicTask({
+        taskId: task.id,
+        patch: { enabled: !task.enabled }
+      });
+      setStatus(!task.enabled ? t("resume") : t("pause"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function deletePeriodicTask(task: PeriodicTask) {
+    if (!desktopApi) {
+      return;
+    }
+    if (!window.confirm(`${t("deleteTask")}: ${task.name}?`)) {
+      return;
+    }
+
+    try {
+      await desktopApi.deletePeriodicTask({ taskId: task.id });
+      setSelectedPeriodicTaskId(current => current === task.id ? null : current);
+      setStatus(t("taskDeleted"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function runPeriodicTaskNow(task: PeriodicTask) {
+    if (!desktopApi) {
+      return;
+    }
+
+    try {
+      await desktopApi.runPeriodicTaskNow({ taskId: task.id });
+      setStatus(t("taskStarted"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function openPeriodicTaskSession(task: PeriodicTask) {
+    if (!task.sessionId) {
+      return;
+    }
+    setMainView("conversation");
+    void openSession(
+      {
+        threadId: task.sessionId,
+        title: task.name,
+        updatedAt: task.lastCompletedAt ?? task.lastRunAt ?? task.updatedAt
+      },
+      task.workspace
+    );
   }
 
   async function sendTurn() {
@@ -2294,7 +2700,8 @@ export function App() {
   async function sendTurnRequest(
     text: string,
     outgoingAttachments: ComposerAttachment[],
-    targetSession: SessionView | null = session
+    targetSession: SessionView | null = session,
+    options: { clearLocalComposer?: boolean } = {}
   ) {
     if (
       !desktopApi ||
@@ -2307,9 +2714,11 @@ export function App() {
     const trimmedText = text.trim();
     const input = buildTurnInput(trimmedText, outgoingAttachments);
     const displayText = userTranscriptText(trimmedText, outgoingAttachments);
-    setComposer("");
-    setComposerCompletion(null);
-    setAttachments([]);
+    if (options.clearLocalComposer ?? true) {
+      setComposer("");
+      setComposerCompletion(null);
+      setAttachments([]);
+    }
     resetVisibleTranscriptWindow();
     setTranscript(previous => [
       ...previous,
@@ -2330,7 +2739,9 @@ export function App() {
       requestScrollToBottom();
     } catch (error) {
       clearSessionTurnRunning(targetSession.threadId);
-      setAttachments(outgoingAttachments);
+      if (options.clearLocalComposer ?? true) {
+        setAttachments(outgoingAttachments);
+      }
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }
@@ -2479,11 +2890,6 @@ export function App() {
         ackClientCommand(clientCommandId);
         return;
       }
-      if (runningTurnsBySessionRef.current[targetSession.session.threadId]) {
-        setStatus("Mobile message ignored: target session is already working.");
-        ackClientCommand(clientCommandId);
-        return;
-      }
       ackClientCommand(clientCommandId);
       const remoteImages = remoteAttachments.filter(
         (attachment): attachment is Extract<RemoteAttachmentInput, { kind: "image" }> =>
@@ -2505,7 +2911,17 @@ export function App() {
           ? await desktopApi.saveRemoteAttachments(remoteImages)
           : [];
       const savedAttachments = [...savedImages, ...remoteMentions];
-      await sendTurnRequest(text, savedAttachments, targetSession.session);
+      if (runningTurnsBySessionRef.current[targetSession.session.threadId]) {
+        enqueueRemoteTurn(targetSession.session.threadId, {
+          text,
+          attachments: savedAttachments,
+          session: targetSession.session
+        });
+        return;
+      }
+      await sendTurnRequest(text, savedAttachments, targetSession.session, {
+        clearLocalComposer: false
+      });
       return;
     }
 
@@ -2824,7 +3240,7 @@ export function App() {
     const sessionInfo = sessionInfoForThread(event.threadId);
     const sessionTitle = sessionInfo.title.trim();
     const finalMessage = finalAssistantMessageForTurn(event.threadId, event.turnId);
-    const notificationBody = notificationBodyFromFinalMessage(finalMessage);
+    const notificationBody = relayNotificationBodyFromFinalMessage(finalMessage);
     const startedAt = turnStartedAtBySessionRef.current[event.threadId];
     const durationMs = startedAt
       ? Math.max(Date.now() - startedAt, 0)
@@ -2844,7 +3260,8 @@ export function App() {
           duration_ms: durationMs,
           session_title: sessionTitle,
           workspace: sessionInfo.workspace ?? "",
-          final_message: notificationBody
+          notification_body: notificationBody,
+          final_message: finalMessage
         }
       }
     });
@@ -2964,6 +3381,54 @@ export function App() {
       return;
     }
     socket.send(JSON.stringify(message));
+  }
+
+  function scheduleRelayProgress(threadId: string, payload: RelayProgressPayload) {
+    if (!threadId) {
+      return;
+    }
+    pendingRelayProgressRef.current = {
+      ...pendingRelayProgressRef.current,
+      [threadId]: payload
+    };
+    if (relayProgressTimerRef.current !== null) {
+      return;
+    }
+    relayProgressTimerRef.current = window.setTimeout(() => {
+      relayProgressTimerRef.current = null;
+      flushRelayProgress();
+    }, RELAY_PROGRESS_DEBOUNCE_MS);
+  }
+
+  function flushRelayProgress() {
+    if (relayProgressTimerRef.current !== null) {
+      window.clearTimeout(relayProgressTimerRef.current);
+      relayProgressTimerRef.current = null;
+    }
+    const pending = pendingRelayProgressRef.current;
+    pendingRelayProgressRef.current = {};
+    for (const payload of Object.values(pending)) {
+      publishRelay({
+        type: "desktop.progress",
+        payload
+      });
+    }
+  }
+
+  function relayAssistantProgressMessage(
+    threadId: string,
+    turnId: string
+  ): RemoteSnapshotMessage | undefined {
+    const current = turnAssistantTextRef.current[threadId];
+    if (current?.turnId !== turnId || !current.text.trim()) {
+      return undefined;
+    }
+    return {
+      id: `assistant-progress-${turnId}`,
+      role: "codex",
+      text: relayMessageTextFromTranscriptText(current.text),
+      meta: "streaming"
+    };
   }
 
   function ackClientCommand(clientCommandId: string | null) {
@@ -3331,6 +3796,34 @@ export function App() {
     setStatus(`Approval ${decision}.`);
   }
 
+  function dismissDesktopUpdate(version: string | null) {
+    if (!version) {
+      setDesktopUpdate(null);
+      return;
+    }
+
+    window.localStorage.setItem(UPDATE_DISMISSED_STORAGE_KEY, version);
+    setDismissedUpdateVersion(version);
+  }
+
+  async function openDesktopUpdateDownload(update: DesktopUpdateInfo) {
+    if (!desktopApi || !update.downloadUrl) {
+      return;
+    }
+
+    try {
+      await desktopApi.openUpdateDownload(update.downloadUrl);
+      dismissDesktopUpdate(update.latestVersion);
+      setStatus(
+        language === "zh-CN"
+          ? `已打开 ${update.latestVersion ?? "新版"} 下载页面。`
+          : `Opened download page for ${update.latestVersion ?? "the new version"}.`
+      );
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   return (
     <main className={`shell${isSidebarCollapsed ? " sidebarCollapsed" : ""}`}>
       <aside
@@ -3358,6 +3851,37 @@ export function App() {
             )}
           </button>
         </div>
+
+        {visibleDesktopUpdate ? (
+          <div className="updateNotice" role="status">
+            <div>
+              <strong>{t("updateAvailable")}</strong>
+              <span>
+                {t("updateAvailableBody", {
+                  version: visibleDesktopUpdate.latestVersion ?? ""
+                })}
+              </span>
+            </div>
+            <div className="updateNoticeActions">
+              <button
+                className="miniButton primaryMiniButton"
+                type="button"
+                onClick={() => void openDesktopUpdateDownload(visibleDesktopUpdate)}
+              >
+                <Download size={14} />
+                <span>{t("downloadUpdate")}</span>
+              </button>
+              <button
+                aria-label={t("dismissUpdate")}
+                className="iconOnlyButton compactIconButton"
+                type="button"
+                onClick={() => dismissDesktopUpdate(visibleDesktopUpdate.latestVersion)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="collapsedFavoritesRail" aria-label={t("favoriteSessions")}>
           {favoriteSessions.map(({ workspace: cwd, session: item }) => {
@@ -3645,58 +4169,96 @@ export function App() {
       <section className="conversation" aria-label={t("conversation")}>
         <header className="topbar">
           <div>
-            <h2>{session?.title ?? t("newCodexSession")}</h2>
-            <p>{status}</p>
+            <h2>
+              {mainView === "tasks"
+                ? t("periodicTasks")
+                : session?.title ?? t("newCodexSession")}
+            </h2>
+            <p>{mainView === "tasks" ? t("periodicTasksIntro") : status}</p>
+          </div>
+          <div className="topbarActions">
+            <button
+              aria-pressed={mainView === "tasks"}
+              className="miniButton"
+              type="button"
+              onClick={() =>
+                setMainView(view => view === "tasks" ? "conversation" : "tasks")
+              }
+            >
+              <CalendarClock size={14} />
+              <span>{t("periodicTasks")}</span>
+            </button>
           </div>
         </header>
 
-        <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
-          {isConversationLoading ? (
-            <div className="loadingState">
-              <span className="loadingSpinner" aria-hidden="true" />
-              <h2>{t("loadingSessionTitle")}</h2>
-              <p>{t("loadingSessionBody")}</p>
-            </div>
-          ) : transcript.length === 0 ? (
-            <div className="emptyState">
-              <h2>{t("startSessionTitle")}</h2>
-              <p>{t("startSessionBody")}</p>
-            </div>
-          ) : (
-            <div className="timeline">
-              {hiddenTranscriptCount > 0 ? (
-                <div className="historyLoader">
-                  <button type="button" onClick={loadOlderTranscript}>
-                    {t("loadOlderMessages", {
-                      count: Math.min(TRANSCRIPT_PAGE_SIZE, hiddenTranscriptCount)
-                    })}
-                  </button>
-                  <span>{t("hiddenMessages", { count: hiddenTranscriptCount })}</span>
-                </div>
-              ) : null}
-              {visibleTranscript.map(entry => (
-                <TimelineEntry entry={entry} key={entry.id} language={language} />
-              ))}
-              {isTurnRunning ? (
-                <div className="timelineItem workingItem" aria-live="polite">
-                  <span className="timelineMarker" aria-hidden="true" />
-                  <div className="timelineContent">
-                    <div className="timelineMeta">
-                      <strong>{t("working")}</strong>
-                      {activeTurnElapsedMs !== null ? (
-                        <span className="turnDuration">
-                          {formatTurnDuration(activeTurnElapsedMs)}
-                        </span>
-                      ) : null}
-                      {activeTurnId ? <code>{activeTurnId.slice(0, 8)}</code> : null}
+        {mainView === "tasks" ? (
+          <PeriodicTasksView
+            language={language}
+            model={model}
+            modelEffort={modelEffort}
+            modelOptions={modelSelectOptions}
+            permissionMode={permissionMode}
+            selectedTaskId={selectedPeriodicTaskId}
+            sessionsByWorkspace={workspaceSessions}
+            tasks={periodicTasks}
+            workspaces={workspaces}
+            onCreateOrUpdate={savePeriodicTask}
+            onDelete={deletePeriodicTask}
+            onOpenSession={openPeriodicTaskSession}
+            onRunNow={runPeriodicTaskNow}
+            onSelectTask={setSelectedPeriodicTaskId}
+            onToggleEnabled={togglePeriodicTask}
+          />
+        ) : (
+          <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
+            {isConversationLoading ? (
+              <div className="loadingState">
+                <span className="loadingSpinner" aria-hidden="true" />
+                <h2>{t("loadingSessionTitle")}</h2>
+                <p>{t("loadingSessionBody")}</p>
+              </div>
+            ) : transcript.length === 0 ? (
+              <div className="emptyState">
+                <h2>{t("startSessionTitle")}</h2>
+                <p>{t("startSessionBody")}</p>
+              </div>
+            ) : (
+              <div className="timeline">
+                {hiddenTranscriptCount > 0 ? (
+                  <div className="historyLoader">
+                    <button type="button" onClick={loadOlderTranscript}>
+                      {t("loadOlderMessages", {
+                        count: Math.min(TRANSCRIPT_PAGE_SIZE, hiddenTranscriptCount)
+                      })}
+                    </button>
+                    <span>{t("hiddenMessages", { count: hiddenTranscriptCount })}</span>
+                  </div>
+                ) : null}
+                {visibleTranscript.map(entry => (
+                  <TimelineEntry entry={entry} key={entry.id} language={language} />
+                ))}
+                {isTurnRunning ? (
+                  <div className="timelineItem workingItem" aria-live="polite">
+                    <span className="timelineMarker" aria-hidden="true" />
+                    <div className="timelineContent">
+                      <div className="timelineMeta">
+                        <strong>{t("working")}</strong>
+                        {activeTurnElapsedMs !== null ? (
+                          <span className="turnDuration">
+                            {formatTurnDuration(activeTurnElapsedMs)}
+                          </span>
+                        ) : null}
+                        {activeTurnId ? <code>{activeTurnId.slice(0, 8)}</code> : null}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        )}
 
+        {mainView === "conversation" ? (
         <div className="composerDock">
           <InlineActionBar
             approvals={approvals}
@@ -3894,6 +4456,7 @@ export function App() {
             </div>
           </form>
         </div>
+        ) : null}
       </section>
 
       {isSettingsOpen ? (
@@ -3928,6 +4491,440 @@ export function App() {
         />
       ) : null}
     </main>
+  );
+}
+
+function PeriodicTasksView({
+  language,
+  model,
+  modelEffort,
+  modelOptions,
+  permissionMode,
+  selectedTaskId,
+  sessionsByWorkspace,
+  tasks,
+  workspaces,
+  onCreateOrUpdate,
+  onDelete,
+  onOpenSession,
+  onRunNow,
+  onSelectTask,
+  onToggleEnabled
+}: {
+  language: UILanguage;
+  model: string;
+  modelEffort: ModelEffort;
+  modelOptions: ModelOption[];
+  permissionMode: PermissionMode;
+  selectedTaskId: string | null;
+  sessionsByWorkspace: Record<string, SessionView[]>;
+  tasks: PeriodicTask[];
+  workspaces: string[];
+  onCreateOrUpdate: (input: PeriodicTaskInput, taskId?: string | null) => void | Promise<void>;
+  onDelete: (task: PeriodicTask) => void | Promise<void>;
+  onOpenSession: (task: PeriodicTask) => void;
+  onRunNow: (task: PeriodicTask) => void | Promise<void>;
+  onSelectTask: (taskId: string | null) => void;
+  onToggleEnabled: (task: PeriodicTask) => void | Promise<void>;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+  const selectedTask = tasks.find(task => task.id === selectedTaskId) ?? null;
+  const defaultWorkspace = selectedTask?.workspace ?? workspaces[0] ?? "";
+  const [draft, setDraft] = useState<PeriodicTaskInput>(() =>
+    periodicTaskDraftFromTask(selectedTask, {
+      workspace: defaultWorkspace,
+      model,
+      modelEffort,
+      permissionMode
+    })
+  );
+  const [draftTaskId, setDraftTaskId] = useState<string | null>(selectedTask?.id ?? null);
+
+  useEffect(() => {
+    const nextTask = tasks.find(task => task.id === selectedTaskId) ?? null;
+    const nextWorkspace = nextTask?.workspace ?? workspaces[0] ?? "";
+    setDraftTaskId(nextTask?.id ?? null);
+    setDraft(periodicTaskDraftFromTask(nextTask, {
+      workspace: nextWorkspace,
+      model,
+      modelEffort,
+      permissionMode
+    }));
+  }, [model, modelEffort, permissionMode, selectedTaskId, tasks, workspaces]);
+
+  const workspaceSessions = draft.workspace
+    ? sessionsByWorkspace[draft.workspace] ?? []
+    : [];
+  const draftTrigger = draft.trigger ?? "interval";
+  const draftScheduleFrequency = draft.scheduleFrequency ?? "daily";
+  const draftScheduleWeekdays = draft.scheduleWeekdays ?? [1];
+  const canSubmit =
+    draft.name.trim().length > 0 &&
+    draft.workspace.trim().length > 0 &&
+    draft.prompt.trim().length > 0 &&
+    (draft.sessionMode !== "existing" || Boolean(draft.sessionId)) &&
+    (draftTrigger !== "schedule" ||
+      draftScheduleFrequency !== "weekly" ||
+      draftScheduleWeekdays.length > 0);
+
+  function updateDraft(patch: Partial<PeriodicTaskInput>) {
+    setDraft(current => ({ ...current, ...patch }));
+  }
+
+  function toggleDraftWeekday(value: number) {
+    const nextWeekdays = draftScheduleWeekdays.includes(value)
+      ? draftScheduleWeekdays.filter(item => item !== value)
+      : [...draftScheduleWeekdays, value].sort((a, b) => a - b);
+    updateDraft({ scheduleWeekdays: nextWeekdays });
+  }
+
+  function submitTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit) {
+      return;
+    }
+    void onCreateOrUpdate(draft, draftTaskId);
+  }
+
+  return (
+    <div className="tasksView">
+      <section className="tasksListPane" aria-label={t("periodicTasks")}>
+        <div className="tasksListHeader">
+          <div>
+            <h3>{t("periodicTasks")}</h3>
+            <p>{tasks.length} {t("periodicTasks")}</p>
+          </div>
+          <button className="miniButton primaryMiniButton" type="button" onClick={() => onSelectTask(null)}>
+            <Plus size={14} />
+            <span>{t("newTask")}</span>
+          </button>
+        </div>
+
+        {tasks.length === 0 ? (
+          <div className="tasksEmpty">
+            <CalendarClock size={20} />
+            <h3>{t("noTasks")}</h3>
+            <p>{t("noTasksBody")}</p>
+          </div>
+        ) : (
+          <div className="tasksList" role="list">
+            {tasks.map(task => (
+              <button
+                className="taskListItem"
+                data-active={task.id === draftTaskId}
+                key={task.id}
+                role="listitem"
+                type="button"
+                onClick={() => onSelectTask(task.id)}
+              >
+                <span className="taskListTitle">
+                  <strong>{task.name}</strong>
+                  <small>{workspaceName(task.workspace)}</small>
+                </span>
+                <span className="taskStatusPill" data-status={task.status}>
+                  {periodicTaskStatusLabel(task, language)}
+                </span>
+                <span className="taskListMeta">
+                  {periodicTaskTriggerLabel(task, language)} · {t("nextRun")}:{" "}
+                  {task.nextRunAt ? formatTaskTime(task.nextRunAt) : "—"}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="taskEditorPane" aria-label={draftTaskId ? t("saveTask") : t("createTask")}>
+        <form className="taskEditorForm" onSubmit={submitTask}>
+          <div className="taskEditorHeader">
+            <div>
+              <h3>{draftTaskId ? draft.name || t("periodicTasks") : t("newTask")}</h3>
+              <p>{t("periodicTasksIntro")}</p>
+            </div>
+            {draftTaskId ? (
+              <span className="taskStatusPill" data-status={selectedTask?.status ?? "idle"}>
+                {selectedTask ? periodicTaskStatusLabel(selectedTask, language) : "idle"}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="taskFormGrid">
+            <label className="configField">
+              <span>{t("taskName")}</span>
+              <input
+                value={draft.name}
+                onChange={event => updateDraft({ name: event.target.value })}
+                placeholder="GitHub issue monitor"
+              />
+            </label>
+
+            <label className="configField">
+              <span>{t("targetWorkspace")}</span>
+              <select
+                value={draft.workspace}
+                onChange={event => {
+                  const nextWorkspace = event.target.value;
+                  updateDraft({
+                    workspace: nextWorkspace,
+                    sessionId:
+                      draft.sessionMode === "existing"
+                        ? sessionsByWorkspace[nextWorkspace]?.[0]?.threadId
+                        : selectedTask?.sessionMode === "create_once" &&
+                            selectedTask.workspace === nextWorkspace
+                          ? selectedTask.sessionId
+                          : undefined
+                  });
+                }}
+              >
+                {workspaces.length === 0 ? (
+                  <option value="">No workspace</option>
+                ) : null}
+                {workspaces.map(cwd => (
+                  <option key={cwd} value={cwd}>
+                    {workspaceName(cwd)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="configField">
+              <span>{t("sessionMode")}</span>
+              <select
+                value={draft.sessionMode}
+                onChange={event => {
+                  const sessionMode = event.target.value as "existing" | "create_once";
+                  updateDraft({
+                    sessionMode,
+                    sessionId:
+                      sessionMode === "existing"
+                        ? workspaceSessions[0]?.threadId
+                        : selectedTask?.sessionMode === "create_once"
+                          ? selectedTask.sessionId
+                          : undefined
+                  });
+                }}
+              >
+                <option value="create_once">{t("dedicatedSession")}</option>
+                <option value="existing">{t("existingSession")}</option>
+              </select>
+            </label>
+
+            {draft.sessionMode === "existing" ? (
+              <label className="configField">
+                <span>{t("targetSession")}</span>
+                <select
+                  value={draft.sessionId ?? ""}
+                  onChange={event => updateDraft({ sessionId: event.target.value })}
+                >
+                  {workspaceSessions.length === 0 ? (
+                    <option value="">No sessions loaded</option>
+                  ) : null}
+                  {workspaceSessions.map(item => (
+                    <option key={item.threadId} value={item.threadId}>
+                      {item.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <div className="taskSessionHint">
+                <span>{t("targetSession")}</span>
+                <strong>{selectedTask?.sessionId?.slice(0, 8) ?? t("taskSessionPending")}</strong>
+              </div>
+            )}
+
+            <label className="configField">
+              <span>{t("triggerType")}</span>
+              <select
+                value={draftTrigger}
+                onChange={event =>
+                  updateDraft({ trigger: event.target.value as "interval" | "schedule" })
+                }
+              >
+                <option value="interval">{t("triggerInterval")}</option>
+                <option value="schedule">{t("triggerSchedule")}</option>
+              </select>
+            </label>
+
+            {draftTrigger === "schedule" ? (
+              <>
+                <label className="configField">
+                  <span>{t("scheduleFrequency")}</span>
+                  <select
+                    value={draftScheduleFrequency}
+                    onChange={event =>
+                      updateDraft({ scheduleFrequency: event.target.value as "daily" | "weekly" })
+                    }
+                  >
+                    <option value="daily">{t("scheduleDaily")}</option>
+                    <option value="weekly">{t("scheduleWeekly")}</option>
+                  </select>
+                </label>
+
+                <label className="configField">
+                  <span>{t("scheduleTime")}</span>
+                  <input
+                    type="time"
+                    value={draft.scheduleTime ?? "09:00"}
+                    onChange={event => updateDraft({ scheduleTime: event.target.value })}
+                  />
+                </label>
+
+                {draftScheduleFrequency === "weekly" ? (
+                  <div className="taskWeekdayField">
+                    <span>{t("scheduleWeekdays")}</span>
+                    <div className="weekdayPicker" role="group" aria-label={t("scheduleWeekdays")}>
+                      {WEEKDAY_OPTIONS.map(option => (
+                        <button
+                          className="weekdayButton"
+                          data-active={draftScheduleWeekdays.includes(option.value)}
+                          key={option.value}
+                          type="button"
+                          onClick={() => toggleDraftWeekday(option.value)}
+                        >
+                          {language === "zh-CN" ? option.zh : option.en}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <label className="configField">
+                <span>{t("intervalMinutes")}</span>
+                <input
+                  min={1}
+                  step={1}
+                  type="number"
+                  value={Math.max(1, Math.round(draft.intervalMs / 60_000))}
+                  onChange={event =>
+                    updateDraft({ intervalMs: Math.max(1, Number(event.target.value) || 1) * 60_000 })
+                  }
+                />
+              </label>
+            )}
+
+            <label className="configField">
+              <span>{t("model")}</span>
+              <select
+                value={draft.model ?? model}
+                onChange={event => updateDraft({ model: event.target.value })}
+              >
+                {modelOptions.map(option => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="configField">
+              <span>{t("reasoningEffort")}</span>
+              <select
+                value={String(draft.effort ?? modelEffort)}
+                onChange={event => updateDraft({ effort: event.target.value })}
+              >
+                {EFFORT_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {effortLabel(option.value, language)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="configField">
+              <span>{t("permissions")}</span>
+              <select
+                value={draft.permissionMode ?? permissionMode}
+                onChange={event =>
+                  updateDraft({ permissionMode: event.target.value as PermissionMode })
+                }
+              >
+                {PERMISSION_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {permissionLabel(option.value, language)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <label className="configField taskPromptField">
+            <span>{t("taskPrompt")}</span>
+            <textarea
+              value={draft.prompt}
+              onChange={event => updateDraft({ prompt: event.target.value })}
+              placeholder={defaultPeriodicTaskPrompt()}
+            />
+          </label>
+
+          <label className="toggleField taskToggleField">
+            <input
+              checked={draft.enabled ?? true}
+              onChange={event => updateDraft({ enabled: event.target.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("enabled")}</strong>
+              <small>{t("periodicTasksIntro")}</small>
+            </span>
+          </label>
+
+          {selectedTask ? (
+            <div className="taskRunSummary">
+              <span>{t("lastRun")}</span>
+              <strong>{selectedTask.lastRunAt ? formatTaskTime(selectedTask.lastRunAt) : "—"}</strong>
+              <span>{t("nextRun")}</span>
+              <strong>{selectedTask.nextRunAt ? formatTaskTime(selectedTask.nextRunAt) : "—"}</strong>
+              {selectedTask.lastError ? (
+                <>
+                  <span>Error</span>
+                  <strong>{selectedTask.lastError}</strong>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="taskEditorActions">
+            <button className="approveButton" disabled={!canSubmit} type="submit">
+              <Check size={14} />
+              <span>{draftTaskId ? t("saveTask") : t("createTask")}</span>
+            </button>
+            {selectedTask ? (
+              <>
+                <button
+                  className="miniButton"
+                  disabled={selectedTask.status === "running"}
+                  type="button"
+                  onClick={() => void onRunNow(selectedTask)}
+                >
+                  <Play size={14} />
+                  <span>{t("runNow")}</span>
+                </button>
+                <button className="miniButton" type="button" onClick={() => void onToggleEnabled(selectedTask)}>
+                  {selectedTask.enabled ? <Pause size={14} /> : <RotateCw size={14} />}
+                  <span>{selectedTask.enabled ? t("pause") : t("resume")}</span>
+                </button>
+                <button
+                  className="miniButton"
+                  disabled={!selectedTask.sessionId}
+                  type="button"
+                  onClick={() => onOpenSession(selectedTask)}
+                >
+                  <ChevronRight size={14} />
+                  <span>{t("openTaskSession")}</span>
+                </button>
+                <button className="declineButton" type="button" onClick={() => void onDelete(selectedTask)}>
+                  <Trash2 size={14} />
+                  <span>{t("deleteTask")}</span>
+                </button>
+              </>
+            ) : null}
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -5177,6 +6174,106 @@ function formatTurnDuration(milliseconds: number): string {
   return `${seconds}s`;
 }
 
+function periodicTaskDraftFromTask(
+  task: PeriodicTask | null,
+  fallback: {
+    workspace: string;
+    model: string;
+    modelEffort: ModelEffort;
+    permissionMode: PermissionMode;
+  }
+): PeriodicTaskInput {
+  if (task) {
+    return {
+      name: task.name,
+      enabled: task.enabled,
+      workspace: task.workspace,
+      sessionMode: task.sessionMode,
+      sessionId: task.sessionId,
+      prompt: task.prompt,
+      trigger: task.trigger,
+      intervalMs: task.intervalMs,
+      scheduleFrequency: task.scheduleFrequency,
+      scheduleTime: task.scheduleTime,
+      scheduleWeekdays: task.scheduleWeekdays,
+      model: task.model,
+      effort: task.effort,
+      permissionMode: task.permissionMode
+    };
+  }
+
+  return {
+    name: "",
+    enabled: true,
+    workspace: fallback.workspace,
+    sessionMode: "create_once",
+    prompt: defaultPeriodicTaskPrompt(),
+    trigger: "interval",
+    intervalMs: 5 * 60_000,
+    scheduleFrequency: "daily",
+    scheduleTime: "09:00",
+    scheduleWeekdays: [1],
+    model: fallback.model,
+    effort: fallback.modelEffort,
+    permissionMode: fallback.permissionMode
+  };
+}
+
+function defaultPeriodicTaskPrompt(): string {
+  return [
+    "Check GitHub issues for this repository.",
+    "",
+    "Rules:",
+    "- Look for open issues that are actionable.",
+    "- Pick at most one issue per run.",
+    "- Before editing, summarize the chosen issue and plan.",
+    "- Implement the fix, run relevant tests, and report the result.",
+    "- If nothing needs action, say so briefly and stop.",
+    "- Keep a local note of handled issue IDs in .codex-plus/periodic/github-issues.json."
+  ].join("\n");
+}
+
+function periodicTaskStatusLabel(task: PeriodicTask, language: UILanguage): string {
+  if (!task.enabled && task.status !== "running") {
+    return textFor(language, "pause");
+  }
+  if (task.status === "running") {
+    return textFor(language, "working");
+  }
+  if (task.status === "error") {
+    return "Error";
+  }
+  if (task.status === "waiting") {
+    return textFor(language, "ready");
+  }
+  return task.status;
+}
+
+function periodicTaskTriggerLabel(task: PeriodicTask, language: UILanguage): string {
+  if (task.trigger !== "schedule") {
+    const minutes = Math.max(1, Math.round(task.intervalMs / 60_000));
+    return language === "zh-CN" ? `完成后 ${minutes} 分钟` : `${minutes}m after completion`;
+  }
+
+  if (task.scheduleFrequency === "daily") {
+    return language === "zh-CN"
+      ? `每天 ${task.scheduleTime}`
+      : `Daily ${task.scheduleTime}`;
+  }
+
+  const days = WEEKDAY_OPTIONS
+    .filter(option => task.scheduleWeekdays.includes(option.value))
+    .map(option => language === "zh-CN" ? option.zh : option.en)
+    .join(language === "zh-CN" ? "、" : ", ");
+  return language === "zh-CN"
+    ? `每周 ${days || "周一"} ${task.scheduleTime}`
+    : `Weekly ${days || "Mon"} ${task.scheduleTime}`;
+}
+
+function formatTaskTime(value: number): string {
+  return new Date(value).toLocaleString();
+}
+
 function codexPermissionOptions(value: PermissionMode): {
   approvalPolicy: string;
   approvalsReviewer: string;
@@ -5283,23 +6380,119 @@ function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMess
     return {
       id: entry.id,
       role: "user",
-      text: entry.text
+      text: relayMessageTextFromTranscriptText(entry.text)
     };
   }
   if (entry.role === "assistant") {
     return {
       id: entry.id,
       role: "codex",
-      text: entry.text,
+      text: relayMessageTextFromTranscriptText(entry.text),
       meta: entry.meta
     };
   }
   return {
     id: entry.id,
     role: "event",
-    text: entry.text,
+    text: relayTextFromTranscriptEntry(entry),
     meta: roleLabel(entry.role)
   };
+}
+
+function relayTextFromTranscriptEntry(entry: TranscriptEntry): string {
+  if (entry.role === "edited") {
+    return truncateRelayEventText(compactEditedTranscriptText(entry.text));
+  }
+  if (entry.role === "diff") {
+    return truncateRelayEventText(compactDiffTranscriptText(entry.text));
+  }
+  return truncateRelayEventText(entry.text);
+}
+
+function relayMessageTextFromTranscriptText(text: string): string {
+  return tailNotificationText(text.trim(), RELAY_MESSAGE_TEXT_MAX_CHARS);
+}
+
+function relayEventFromCodexEvent(event: CodexAdapterEvent): Record<string, unknown> {
+  switch (event.type) {
+    case "thread.started":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        summary: truncateRelayEventText(eventSummary(event))
+      };
+    case "turn.started":
+    case "turn.completed":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        summary: truncateRelayEventText(eventSummary(event))
+      };
+    case "plan.updated":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        plan: truncateRelayEventText(planSummary(event.plan))
+      };
+    case "diff.updated":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        diff: truncateRelayEventText(compactDiffSummary(event.diff))
+      };
+    case "file.patch.updated":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        patch: truncateRelayEventText(compactEditedSummary(event.patch))
+      };
+    case "approval.requested":
+      return {
+        type: event.type,
+        requestId: event.requestId,
+        approvalType: event.approvalType,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        summary: truncateRelayEventText(approvalSummary(event.request))
+      };
+    case "raw.notification":
+      return {
+        type: event.type,
+        method: event.method,
+        summary: truncateRelayEventText(eventSummary(event))
+      };
+    case "raw.serverRequest":
+      return {
+        type: event.type,
+        method: event.method,
+        requestId: event.requestId,
+        summary: truncateRelayEventText(eventSummary(event))
+      };
+    case "message.delta":
+    case "reasoning.delta":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        text: truncateRelayEventText(event.text)
+      };
+    case "command.delta":
+      return {
+        type: event.type,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        stream: event.stream,
+        text: truncateRelayEventText(event.text)
+      };
+  }
 }
 
 function buildTurnInput(text: string, attachments: ComposerAttachment[]): UserInput[] {
@@ -5601,8 +6794,8 @@ function appendAssistantDelta(
   return next;
 }
 
-function notificationBodyFromFinalMessage(message: string): string {
-  return truncateNotificationText(cleanNotificationText(message), NOTIFICATION_BODY_MAX_CHARS);
+function relayNotificationBodyFromFinalMessage(message: string): string {
+  return cleanNotificationText(message);
 }
 
 function cleanNotificationText(text: string): string {
@@ -5622,6 +6815,32 @@ function truncateNotificationText(text: string, maxChars: number): string {
     return text;
   }
   return `${chars.slice(0, maxChars).join("").trimEnd()}...`;
+}
+
+function tailNotificationText(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) {
+    return text;
+  }
+  return `...${chars.slice(chars.length - maxChars).join("").trimStart()}`;
+}
+
+function truncateRelayEventText(text: string): string {
+  return truncateNotificationText(text.trim(), RELAY_EVENT_TEXT_MAX_CHARS);
+}
+
+function compactEditedTranscriptText(text: string): string {
+  return text
+    .replace(/\n*```diff[\s\S]*?```\n*/g, "\n")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function compactDiffTranscriptText(text: string): string {
+  const stats = diffStats(text);
+  return stats === "+0 -0" ? text : `Diff updated (${stats})`;
 }
 
 function transcriptFromThread(thread: Thread): TranscriptEntry[] {
@@ -5943,6 +7162,8 @@ function eventSummary(event: CodexAdapterEvent): string {
       return event.text;
     case "command.delta":
       return `${event.stream}: ${event.text}`;
+    case "thread.started":
+      return event.threadId;
     case "turn.started":
     case "turn.completed":
       return event.turnId;
@@ -6002,6 +7223,32 @@ function diffSummary(value: unknown): string {
   return "Diff updated";
 }
 
+function compactDiffSummary(value: unknown): string {
+  if (typeof value === "string") {
+    const stats = diffStats(value);
+    return stats === "+0 -0" ? "Diff updated" : `Diff updated (${stats})`;
+  }
+
+  const record = asRecord(value);
+  const changes = fileChanges(record);
+  if (changes.length > 0) {
+    return changes.map(formatCompactFileChange).join("\n");
+  }
+
+  const files = record.files;
+  if (Array.isArray(files) && files.length > 0) {
+    const fileSummaries = files
+      .map(file => formatCompactFileChange(asRecord(file)))
+      .filter(summary => summary !== "Edited file");
+    if (fileSummaries.length > 0) {
+      return fileSummaries.join("\n");
+    }
+    return `Changed ${files.length} file${files.length === 1 ? "" : "s"}.`;
+  }
+
+  return "Diff updated";
+}
+
 function editedSummary(value: unknown): string {
   if (typeof value === "string") {
     return value.length > 0 ? value : "Edited files";
@@ -6031,6 +7278,40 @@ function editedSummary(value: unknown): string {
   const output = outputText(record);
   if (output) {
     return output;
+  }
+
+  return "Edited files";
+}
+
+function compactEditedSummary(value: unknown): string {
+  if (typeof value === "string") {
+    const stats = diffStats(value);
+    return stats === "+0 -0" ? "Edited files" : `Edited files (${stats})`;
+  }
+
+  const record = asRecord(value);
+  const changes = fileChanges(record);
+  if (changes.length > 0) {
+    return changes.map(formatCompactFileChange).join("\n");
+  }
+
+  const files = record.files ?? record.updatedFiles ?? record.changedFiles;
+  if (Array.isArray(files) && files.length > 0) {
+    return files
+      .map((file, index) => {
+        if (typeof file === "string") {
+          return file || `File ${index + 1}`;
+        }
+        return formatCompactFileChange(asRecord(file));
+      })
+      .join("\n");
+  }
+
+  const path = firstText(record.path, record.file, record.filePath);
+  if (path) {
+    const diff = firstText(record.diff, record.patch);
+    const stats = diff ? diffStats(diff) : "";
+    return `Edited ${path}${stats ? ` (${stats})` : ""}`;
   }
 
   return "Edited files";
@@ -6071,6 +7352,13 @@ function formatFileChange(change: Record<string, unknown>): string {
   }
 
   return `${title}\n\n\`\`\`diff\n${diff.trimEnd()}\n\`\`\``;
+}
+
+function formatCompactFileChange(change: Record<string, unknown>): string {
+  const path = firstText(change.path, change.file, change.filePath);
+  const diff = firstText(change.diff, change.patch);
+  const stats = diff ? diffStats(diff) : "";
+  return `${path || "Edited file"}${stats ? ` (${stats})` : ""}`;
 }
 
 function diffStats(diff: string): string {
@@ -6355,6 +7643,56 @@ function readSavedWorkspaces(): string[] {
 
 function saveWorkspaces(workspaces: string[]): void {
   window.localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(workspaces));
+}
+
+function readCachedWorkspaceSessions(
+  workspaces: string[],
+  hiddenSessionIds: Set<string>
+): WorkspaceSessionMap {
+  try {
+    const raw = window.localStorage.getItem(SESSION_LIST_CACHE_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    const record = asRecord(parsed);
+    const cache: WorkspaceSessionMap = {};
+    for (const cwd of workspaces) {
+      const sessions = record[cwd];
+      if (!Array.isArray(sessions)) {
+        continue;
+      }
+      const normalized = sessions
+        .map(item => sessionViewFromCachedValue(item))
+        .filter((item): item is SessionView => Boolean(item))
+        .filter(item => !hiddenSessionIds.has(item.threadId));
+      if (normalized.length > 0) {
+        cache[cwd] = normalized;
+      }
+    }
+    return cache;
+  } catch {
+    return {};
+  }
+}
+
+function writeCachedWorkspaceSessions(sessionsByWorkspace: WorkspaceSessionMap): void {
+  window.localStorage.setItem(
+    SESSION_LIST_CACHE_STORAGE_KEY,
+    JSON.stringify(sessionsByWorkspace)
+  );
+}
+
+function sessionViewFromCachedValue(value: unknown): SessionView | null {
+  const record = asRecord(value);
+  const threadId = stringOrUndefined(record.threadId);
+  const title = stringOrUndefined(record.title);
+  if (!threadId || !title) {
+    return null;
+  }
+  return {
+    threadId,
+    title,
+    updatedAt: numberOrNull(record.updatedAt) ?? undefined,
+    status: stringOrUndefined(record.status)
+  };
 }
 
 function readStringList(key: string): string[] {

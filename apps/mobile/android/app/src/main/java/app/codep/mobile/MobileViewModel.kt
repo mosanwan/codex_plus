@@ -30,8 +30,12 @@ import app.codep.mobile.data.RelayRepository
 import app.codep.mobile.data.Session
 import app.codep.mobile.data.Workspace
 import app.codep.mobile.data.commandJson
+import app.codep.mobile.data.desktopEventMessage
 import app.codep.mobile.data.eventFromPayload
 import app.codep.mobile.data.eventsFromBacklog
+import app.codep.mobile.data.progressIsWorking
+import app.codep.mobile.data.progressMessage
+import app.codep.mobile.data.progressSessionId
 import app.codep.mobile.data.normalizeRelayEndpoint
 import app.codep.mobile.data.parseRelayEnvelope
 import app.codep.mobile.data.presenceFromPayload
@@ -745,9 +749,50 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                 snapshotFromPayload(envelope.payload)?.let(::applyDesktopSnapshot)
             }
 
+            "desktop.progress" -> {
+                applyDesktopProgress(envelope.payload)
+            }
+
+            "desktop.event" -> {
+                applyDesktopEvent(envelope.payload)
+            }
+
             "desktop.composer_suggestions" -> {
                 handleComposerSuggestions(envelope.payload)
             }
+        }
+    }
+
+    private fun applyDesktopProgress(payload: kotlinx.serialization.json.JsonElement?) {
+        val sessionId = progressSessionId(payload)
+        val activeSessionId = _state.value.activeSessionId
+        if (sessionId.isNotBlank() && activeSessionId != null && sessionId != activeSessionId) {
+            return
+        }
+        progressMessage(payload)?.let(::upsertMessage)
+        progressIsWorking(payload)?.let { isWorking ->
+            _state.update { it.copy(isWorking = isWorking) }
+        }
+    }
+
+    private fun applyDesktopEvent(payload: kotlinx.serialization.json.JsonElement?) {
+        val (sessionId, message) = desktopEventMessage(payload) ?: return
+        val activeSessionId = _state.value.activeSessionId
+        if (sessionId.isNotBlank() && activeSessionId != null && sessionId != activeSessionId) {
+            return
+        }
+        upsertMessage(message)
+    }
+
+    private fun upsertMessage(message: Message) {
+        _state.update { current ->
+            val existing = current.messages.any { it.id == message.id }
+            val next = if (existing) {
+                current.messages.map { if (it.id == message.id) message else it }
+            } else {
+                current.messages + message
+            }
+            current.copy(messages = limitMessages(next))
         }
     }
 

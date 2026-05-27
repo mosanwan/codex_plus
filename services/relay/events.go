@@ -166,21 +166,31 @@ func (s *eventStore) listAfter(
 	deviceID string,
 	afterID int64,
 	limit int,
+	types []string,
 ) ([]relayEventRecord, error) {
 	if limit <= 0 || limit > maxBacklogEvents {
 		limit = maxBacklogEvents
 	}
 
-	rows, err := s.db.Query(
-		`SELECT id, user_id, device_id, source_event_id, type, workspace_id, session_id, title, body, payload_json, created_at
+	query := `SELECT id, user_id, device_id, source_event_id, type, workspace_id, session_id, title, body, payload_json, created_at
 		   FROM events
-		  WHERE user_id = ? AND device_id = ? AND id > ?
-		  ORDER BY id ASC
-		  LIMIT ?`,
-		userID,
-		deviceID,
-		afterID,
-		limit,
+		  WHERE user_id = ? AND device_id = ? AND id > ?`
+	args := []any{userID, deviceID, afterID}
+	eventTypes := filteredEventTypes(types)
+	if len(eventTypes) > 0 {
+		placeholders := make([]string, 0, len(eventTypes))
+		for _, eventType := range eventTypes {
+			placeholders = append(placeholders, "?")
+			args = append(args, eventType)
+		}
+		query += ` AND type IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	query += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -236,6 +246,26 @@ func (s *eventStore) ack(
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
+}
+
+func filteredEventTypes(types []string) []string {
+	if len(types) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(types))
+	filtered := make([]string, 0, len(types))
+	for _, eventType := range types {
+		eventType = strings.TrimSpace(eventType)
+		if eventType == "" {
+			continue
+		}
+		if _, ok := seen[eventType]; ok {
+			continue
+		}
+		seen[eventType] = struct{}{}
+		filtered = append(filtered, eventType)
+	}
+	return filtered
 }
 
 type relayEventScanner interface {

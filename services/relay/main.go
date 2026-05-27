@@ -72,6 +72,8 @@ type peer struct {
 	userName       string
 	deviceID       string
 	clientDeviceID string
+	acceptRealtime bool
+	eventTypes     map[string]struct{}
 	connectedAt    time.Time
 	conn           *websocket.Conn
 	send           chan []byte
@@ -595,6 +597,7 @@ func (s *server) handleWebSocket(w http.ResponseWriter, r *http.Request, role st
 		userName:       user.Name,
 		deviceID:       deviceID,
 		clientDeviceID: clientDeviceID,
+		acceptRealtime: role != "client" || !isTruthy(r.URL.Query().Get("background")),
 		connectedAt:    time.Now().UTC(),
 		conn:           conn,
 		send:           make(chan []byte, 32),
@@ -706,7 +709,7 @@ func (h *hub) register(p *peer) {
 		SentAt:   time.Now().UTC(),
 	})
 	h.broadcastPresenceLocked(r)
-	if p.role == "client" && len(r.lastDesktopSnapshot) > 0 {
+	if p.role == "client" && p.acceptRealtime && len(r.lastDesktopSnapshot) > 0 {
 		p.send <- cloneBytes(r.lastDesktopSnapshot)
 	}
 }
@@ -794,7 +797,11 @@ func (h *hub) forward(from *peer, payload []byte) {
 	}
 	h.mu.Unlock()
 
+	msgType := envelopeType(msg)
 	for _, p := range peers {
+		if from.role == "desktop" && !p.acceptRealtime && strings.HasPrefix(msgType, "desktop.") {
+			continue
+		}
 		select {
 		case p.send <- msg:
 		default:
@@ -830,7 +837,7 @@ func (h *hub) publishEvent(from *peer, request eventPublishRequest) {
 	h.deliverEvent(from.userID, from.deviceID, event)
 }
 
-func (h *hub) resumeEvents(peer *peer, clientLastEventID int64) {
+func (h *hub) resumeEvents(peer *peer, clientLastEventID int64, eventTypes []string) {
 	if h.events == nil {
 		peer.send <- relayError("event.unavailable", "relay event store is not configured")
 		return
@@ -838,6 +845,10 @@ func (h *hub) resumeEvents(peer *peer, clientLastEventID int64) {
 	if peer.role != "client" {
 		return
 	}
+	filter := eventTypeFilter(eventTypes)
+	h.mu.Lock()
+	peer.eventTypes = filter
+	h.mu.Unlock()
 
 	serverLastEventID, err := h.events.cursor(peer.userID, peer.deviceID, peer.clientDeviceID)
 	if err != nil {
@@ -853,7 +864,7 @@ func (h *hub) resumeEvents(peer *peer, clientLastEventID int64) {
 		afterID = serverLastEventID
 	}
 
-	events, err := h.events.listAfter(peer.userID, peer.deviceID, afterID, maxBacklogEvents)
+	events, err := h.events.listAfter(peer.userID, peer.deviceID, afterID, maxBacklogEvents, eventTypes)
 	if err != nil {
 		peer.send <- relayError("event.resume_failed", err.Error())
 		return
@@ -888,6 +899,9 @@ func (h *hub) deliverEvent(userID string, deviceID string, event relayEventRecor
 
 	peers := make([]*peer, 0, len(r.client))
 	for p := range r.client {
+		if !peerAcceptsEvent(p, event.Type) {
+			continue
+		}
 		peers = append(peers, p)
 	}
 	h.mu.RUnlock()
@@ -917,6 +931,40 @@ func envelopeType(payload []byte) string {
 		return ""
 	}
 	return raw.Type
+}
+
+func eventTypeFilter(types []string) map[string]struct{} {
+	if len(types) == 0 {
+		return nil
+	}
+	filter := make(map[string]struct{}, len(types))
+	for _, eventType := range types {
+		eventType = strings.TrimSpace(eventType)
+		if eventType != "" {
+			filter[eventType] = struct{}{}
+		}
+	}
+	if len(filter) == 0 {
+		return nil
+	}
+	return filter
+}
+
+func peerAcceptsEvent(p *peer, eventType string) bool {
+	if len(p.eventTypes) == 0 {
+		return true
+	}
+	_, ok := p.eventTypes[eventType]
+	return ok
+}
+
+func isTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneBytes(value []byte) []byte {
@@ -1065,12 +1113,13 @@ func (p *peer) handleControlMessage(payload []byte) bool {
 		return true
 	case "client.resume_events":
 		var request struct {
-			LastEventID int64 `json:"last_event_id"`
+			LastEventID int64    `json:"last_event_id"`
+			Types       []string `json:"types"`
 		}
 		if len(raw.Payload) > 0 {
 			_ = json.Unmarshal(raw.Payload, &request)
 		}
-		p.hub.resumeEvents(p, request.LastEventID)
+		p.hub.resumeEvents(p, request.LastEventID, request.Types)
 		return true
 	case "event.ack":
 		var request struct {

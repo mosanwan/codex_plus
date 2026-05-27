@@ -40,6 +40,7 @@ data class AppSettings(
     val desktopDeviceId: String = "",
     val clientDeviceId: String = "",
     val lastEventId: Long = 0,
+    val backgroundLastEventId: Long = 0,
     val notificationsEnabled: Boolean = true,
     val themeMode: AppThemeMode = AppThemeMode.Dark,
     val language: AppLanguage = AppLanguage.English
@@ -52,6 +53,7 @@ class AppPreferences(private val context: Context) {
         val desktopDeviceId = stringPreferencesKey("desktop_device_id")
         val clientDeviceId = stringPreferencesKey("client_device_id")
         val lastEventId = longPreferencesKey("last_event_id")
+        val backgroundLastEventId = longPreferencesKey("background_last_event_id")
         val notificationsEnabled = booleanPreferencesKey("notifications_enabled")
         val themeMode = stringPreferencesKey("theme_mode")
         val language = stringPreferencesKey("language")
@@ -79,6 +81,7 @@ class AppPreferences(private val context: Context) {
             desktopDeviceId = prefs[Keys.desktopDeviceId].orEmpty(),
             clientDeviceId = clientDeviceId,
             lastEventId = prefs[Keys.lastEventId] ?: 0L,
+            backgroundLastEventId = prefs[Keys.backgroundLastEventId] ?: (prefs[Keys.lastEventId] ?: 0L),
             notificationsEnabled = prefs[Keys.notificationsEnabled] ?: true,
             themeMode = AppThemeMode.fromStorage(prefs[Keys.themeMode]),
             language = AppLanguage.fromStorage(prefs[Keys.language])
@@ -99,6 +102,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun saveLastEventId(value: Long) {
         context.codepDataStore.edit { it[Keys.lastEventId] = value }
+    }
+
+    suspend fun saveBackgroundLastEventId(value: Long) {
+        context.codepDataStore.edit { it[Keys.backgroundLastEventId] = value }
     }
 
     suspend fun saveNotificationsEnabled(value: Boolean) {

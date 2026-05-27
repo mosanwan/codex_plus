@@ -1632,10 +1632,76 @@ export function App() {
       return;
     }
 
+    if (envelope.type === "desktop.progress") {
+      applyDesktopProgress(envelope.payload);
+      return;
+    }
+
+    if (envelope.type === "desktop.event") {
+      applyDesktopEvent(envelope.payload);
+      return;
+    }
+
     if (envelope.type !== "desktop.snapshot" || !envelope.payload) {
       return;
     }
     applyDesktopSnapshot(envelope.payload as DesktopSnapshotPayload);
+  }
+
+  function applyDesktopProgress(payload: unknown) {
+    const record = asRecord(payload);
+    const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
+    if (sessionId && activeSessionIdRef.current && sessionId !== activeSessionIdRef.current) {
+      return;
+    }
+    const message = remoteMessageFromPayload(record.message);
+    const event = remoteMessageFromPayload(record.event);
+    if (message) {
+      upsertRemoteMessage(message);
+    }
+    if (event) {
+      upsertRemoteMessage(event);
+    }
+    if (typeof record.isWorking === "boolean") {
+      setIsWorking(record.isWorking);
+    }
+  }
+
+  function applyDesktopEvent(payload: unknown) {
+    const event = asRecord(asRecord(payload).event);
+    const sessionId =
+      typeof event.threadId === "string" ? event.threadId : "";
+    if (sessionId && activeSessionIdRef.current && sessionId !== activeSessionIdRef.current) {
+      return;
+    }
+    const text = firstText(
+      event.patch,
+      event.diff,
+      event.plan,
+      event.summary
+    );
+    if (!text) {
+      return;
+    }
+    const type = typeof event.type === "string" ? event.type : "desktop.event";
+    const turnId = typeof event.turnId === "string" ? event.turnId : "";
+    upsertRemoteMessage({
+      id: `event-${type}-${turnId || sessionId || Date.now()}`,
+      role: "event",
+      text,
+      meta: type
+    });
+  }
+
+  function upsertRemoteMessage(message: Message) {
+    setMessages(previous => {
+      const existingIndex = previous.findIndex(item => item.id === message.id);
+      const next =
+        existingIndex >= 0
+          ? previous.map(item => item.id === message.id ? message : item)
+          : [...previous, message];
+      return next.length > 240 ? next.slice(next.length - 240) : next;
+    });
   }
 
   function applyDesktopSnapshot(snapshot: DesktopSnapshotPayload) {
@@ -4280,6 +4346,25 @@ function normalizeRelayEvent(event: Record<string, unknown>): RelayEventRecord |
   };
 }
 
+function remoteMessageFromPayload(value: unknown): Message | null {
+  const record = asRecord(value);
+  const id = typeof record.id === "string" ? record.id : "";
+  const role =
+    record.role === "user" || record.role === "codex" || record.role === "event"
+      ? record.role
+      : null;
+  const text = typeof record.text === "string" ? record.text : "";
+  if (!id || !role || !text) {
+    return null;
+  }
+  return {
+    id,
+    role,
+    text,
+    meta: typeof record.meta === "string" ? record.meta : undefined
+  };
+}
+
 function composerSuggestionsFromPayload(value: unknown): ComposerSuggestion[] {
   if (!Array.isArray(value)) {
     return [];
@@ -4411,10 +4496,12 @@ async function notifyTurnCompleted(
       typeof payload.session_title === "string" ? payload.session_title.trim() : "";
     const workspace =
       typeof payload.workspace === "string" ? workspaceName(payload.workspace) : "";
+    const payloadNotificationBody =
+      typeof payload.notification_body === "string" ? payload.notification_body : "";
     const payloadFinalMessage =
       typeof payload.final_message === "string" ? payload.final_message : "";
     const body =
-      notificationBodyFromFinalMessage(payloadFinalMessage || event.body || "") ||
+      notificationBodyFromFinalMessage(payloadNotificationBody || payloadFinalMessage || event.body || "") ||
       (sessionTitle ? `${sessionTitle} completed.` : "A Codex turn completed.");
     const largeBody = workspace ? `${body}\nWorkspace: ${workspace}` : body;
     const title = notificationTitleForTurn(event.title, sessionTitle);
@@ -4555,6 +4642,15 @@ function stringFromUnknown(value: unknown): string {
 
 function numberFromUnknown(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return "";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

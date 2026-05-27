@@ -5,6 +5,8 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  screen,
+  shell,
   type OpenDialogOptions
 } from "electron";
 import { execFile } from "node:child_process";
@@ -30,7 +32,13 @@ const execFileAsync = promisify(execFile);
 
 if (process.platform === "linux") {
   app.setName("Codex+");
-  const ozonePlatform = process.env.CODEX_PLUS_OZONE_PLATFORM ?? "x11";
+  if (process.env.CODEX_PLUS_DISABLE_GPU !== "0") {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch("disable-gpu");
+  }
+  const ozonePlatform =
+    process.env.CODEX_PLUS_OZONE_PLATFORM ??
+    (process.env.XDG_SESSION_TYPE === "wayland" ? "wayland" : "x11");
   app.commandLine.appendSwitch("ozone-platform", ozonePlatform);
   app.commandLine.appendSwitch(
     "enable-features",
@@ -53,9 +61,63 @@ let adapter: CodexAdapter | null = null;
 let connectPromise: Promise<InitializeResponse> | null = null;
 let initializeResponse: InitializeResponse | null = null;
 let userSettingsPromise: Promise<UserSettings> | null = null;
+let periodicTasksLoadedPromise: Promise<void> | null = null;
+let periodicTaskTimer: NodeJS.Timeout | null = null;
+let periodicTaskTickPromise: Promise<void> | null = null;
+let periodicTasks: PeriodicTask[] = [];
+const activeTurnByThread = new Map<string, string>();
 
 interface UserSettings {
   codexCommandPath?: string;
+}
+
+type PeriodicTaskSessionMode = "existing" | "create_once";
+type PeriodicTaskStatus = "idle" | "waiting" | "running" | "paused" | "error";
+type PeriodicTaskPermissionMode = "default" | "auto-review" | "full-access";
+type PeriodicTaskTrigger = "interval" | "schedule";
+type PeriodicTaskScheduleFrequency = "daily" | "weekly";
+
+interface PeriodicTask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  workspace: string;
+  sessionMode: PeriodicTaskSessionMode;
+  sessionId?: string;
+  prompt: string;
+  trigger: PeriodicTaskTrigger;
+  intervalMs: number;
+  scheduleFrequency: PeriodicTaskScheduleFrequency;
+  scheduleTime: string;
+  scheduleWeekdays: number[];
+  model?: string;
+  effort?: ReasoningEffort | null;
+  permissionMode: PeriodicTaskPermissionMode;
+  nextRunAt?: number;
+  lastRunAt?: number;
+  lastCompletedAt?: number;
+  lastError?: string;
+  status: PeriodicTaskStatus;
+  activeTurnId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface PeriodicTaskInput {
+  name: string;
+  enabled?: boolean;
+  workspace: string;
+  sessionMode: PeriodicTaskSessionMode;
+  sessionId?: string;
+  prompt: string;
+  trigger?: PeriodicTaskTrigger;
+  intervalMs: number;
+  scheduleFrequency?: PeriodicTaskScheduleFrequency;
+  scheduleTime?: string;
+  scheduleWeekdays?: number[];
+  model?: string;
+  effort?: ReasoningEffort | null;
+  permissionMode?: PeriodicTaskPermissionMode;
 }
 
 interface ComposerAttachment {
@@ -94,13 +156,42 @@ interface NotificationSoundFile {
   name: string;
 }
 
+interface DesktopUpdateInfo {
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  downloadUrl?: string;
+  releaseNotes?: string;
+  checkedAt: number;
+}
+
+interface UpdateManifest {
+  version?: unknown;
+  latestVersion?: unknown;
+  tagName?: unknown;
+  releaseNotes?: unknown;
+  notes?: unknown;
+  downloadUrl?: unknown;
+  downloads?: unknown;
+}
+
+const DEFAULT_UPDATE_MANIFEST_URL =
+  "https://codex-bridge.three.ink/codex-plus/desktop/latest.json";
+const UPDATE_CHECK_TIMEOUT_MS = 8000;
+
 function createWindow(): void {
+  const primaryWorkArea = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(1280, primaryWorkArea.width);
+  const height = Math.min(820, primaryWorkArea.height);
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width,
+    height,
+    x: Math.round(primaryWorkArea.x + (primaryWorkArea.width - width) / 2),
+    y: Math.round(primaryWorkArea.y + (primaryWorkArea.height - height) / 2),
     minWidth: 960,
     minHeight: 640,
     title: "Codex+ Desktop",
+    show: false,
     autoHideMenuBar: true,
     backgroundColor: "#f6f7f8",
     webPreferences: {
@@ -110,9 +201,34 @@ function createWindow(): void {
       sandbox: false
     }
   });
+  logDesktopLifecycle("window-created");
   mainWindow.setAutoHideMenuBar(true);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setMenu(null);
+
+  mainWindow.once("ready-to-show", () => {
+    logDesktopLifecycle("window-ready-to-show");
+    presentMainWindow();
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    logDesktopLifecycle("window-did-finish-load");
+    presentMainWindow();
+  });
+
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    logDesktopLifecycle(
+      `window-did-fail-load ${errorCode} ${errorDescription} ${validatedURL}`
+    );
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    logDesktopLifecycle(`render-process-gone ${details.reason} ${details.exitCode}`);
+  });
+
+  mainWindow.on("unresponsive", () => {
+    logDesktopLifecycle("window-unresponsive");
+  });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -121,8 +237,37 @@ function createWindow(): void {
   }
 
   mainWindow.on("closed", () => {
+    logDesktopLifecycle("window-closed");
     mainWindow = null;
   });
+}
+
+function logDesktopLifecycle(message: string): void {
+  if (process.env.CODEX_PLUS_DEBUG_WINDOW !== "1") {
+    return;
+  }
+  console.log(`[codex-plus-window] ${message}`);
+}
+
+function presentMainWindow(): void {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.focus();
+  mainWindow.moveTop();
+  app.focus({ steal: true });
+  setTimeout(() => {
+    mainWindow?.setAlwaysOnTop(false);
+  }, 6000);
+  logDesktopLifecycle(
+    `window-presented visible=${mainWindow.isVisible()} focused=${mainWindow.isFocused()} bounds=${JSON.stringify(mainWindow.getBounds())}`
+  );
 }
 
 app.whenReady().then(() => {
@@ -143,6 +288,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  if (periodicTaskTimer) {
+    clearTimeout(periodicTaskTimer);
+    periodicTaskTimer = null;
+  }
   void adapter?.disconnect();
 });
 
@@ -202,6 +351,7 @@ function createCodexAdapter(codexCommandPath?: string): CodexAdapter {
   });
 
   nextAdapter.on("event", event => {
+    handlePeriodicTaskCodexEvent(event);
     sendCodexEvent(event);
   });
   nextAdapter.on("error", error => {
@@ -232,6 +382,11 @@ function isCodexCommandNotFoundError(error: unknown): boolean {
       message.includes("not found") ||
       message.includes("no such file or directory"))
   );
+}
+
+function isUnknownStatusMethodError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("unknown variant `status`");
 }
 
 async function promptForCodexCommand(): Promise<string | null> {
@@ -420,6 +575,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle("attachment:clipboard", async () => clipboardAttachments());
   ipcMain.handle("attachment:choose", async () => chooseAttachmentFiles());
   ipcMain.handle("notification:sound:choose", async () => chooseNotificationSoundFile());
+  ipcMain.handle("app:update:check", async () => checkForDesktopUpdate());
+  ipcMain.handle("app:update:open-download", async (_event, url: string) => {
+    if (!isHttpUrl(url)) {
+      throw new Error("Invalid update download URL.");
+    }
+    await shell.openExternal(url);
+  });
   ipcMain.handle(
     "attachment:remote",
     async (_event, attachments: RemoteAttachmentInput[]) =>
@@ -525,7 +687,14 @@ function registerIpcHandlers(): void {
     if (!adapter) {
       throw new Error("Codex adapter is not connected");
     }
-    return adapter.getStatus();
+    try {
+      return await adapter.getStatus();
+    } catch (error) {
+      if (isUnknownStatusMethodError(error)) {
+        return null;
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle(
@@ -638,10 +807,822 @@ function registerIpcHandlers(): void {
       });
     }
   );
+
+  ipcMain.handle("periodic-tasks:list", async () => {
+    await loadPeriodicTasks();
+    return periodicTasks;
+  });
+
+  ipcMain.handle(
+    "periodic-tasks:create",
+    async (_event, input: PeriodicTaskInput) => createPeriodicTask(input)
+  );
+
+  ipcMain.handle(
+    "periodic-tasks:update",
+    async (_event, options: { taskId: string; patch: Partial<PeriodicTaskInput> }) =>
+      updatePeriodicTask(options.taskId, options.patch)
+  );
+
+  ipcMain.handle(
+    "periodic-tasks:delete",
+    async (_event, options: { taskId: string }) => deletePeriodicTask(options.taskId)
+  );
+
+  ipcMain.handle(
+    "periodic-tasks:run-now",
+    async (_event, options: { taskId: string }) => runPeriodicTaskNow(options.taskId)
+  );
+}
+
+async function checkForDesktopUpdate(): Promise<DesktopUpdateInfo> {
+  const currentVersion = app.getVersion();
+  const checkedAt = Date.now();
+  const manifestUrl = updateManifestUrl();
+
+  if (!manifestUrl) {
+    return {
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt
+    };
+  }
+
+  const manifest = await fetchUpdateManifest(manifestUrl).catch(() => null);
+  if (!manifest) {
+    return {
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt
+    };
+  }
+  const latestVersion =
+    stringOrUndefined(manifest.latestVersion) ??
+    stringOrUndefined(manifest.version) ??
+    stringOrUndefined(manifest.tagName) ??
+    null;
+
+  if (!latestVersion) {
+    return {
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt
+    };
+  }
+
+  const downloadUrl = selectDownloadUrl(manifest);
+  return {
+    currentVersion,
+    latestVersion,
+    updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+    downloadUrl,
+    releaseNotes:
+      stringOrUndefined(manifest.releaseNotes) ?? stringOrUndefined(manifest.notes),
+    checkedAt
+  };
+}
+
+function updateManifestUrl(): string | null {
+  if (process.env.CODEX_PLUS_DISABLE_UPDATE_CHECK === "1") {
+    return null;
+  }
+
+  const configured = process.env.CODEX_PLUS_UPDATE_MANIFEST_URL?.trim();
+  return configured || DEFAULT_UPDATE_MANIFEST_URL;
+}
+
+async function fetchUpdateManifest(url: string): Promise<UpdateManifest> {
+  if (!isHttpUrl(url)) {
+    throw new Error("Invalid update manifest URL.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`Update check failed with HTTP ${response.status}.`);
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    const text = await response.text();
+    if (!contentType.includes("json")) {
+      throw new Error("Update manifest response is not JSON.");
+    }
+
+    const payload = JSON.parse(text) as unknown;
+    const manifest = asRecord(payload);
+    return manifest as UpdateManifest;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function selectDownloadUrl(manifest: UpdateManifest): string | undefined {
+  const directUrl = stringOrUndefined(manifest.downloadUrl);
+  if (directUrl && isHttpUrl(directUrl)) {
+    return directUrl;
+  }
+
+  const downloads = asRecord(manifest.downloads);
+  const platformKeys = updateDownloadKeys();
+  for (const key of platformKeys) {
+    const candidate = downloadUrlFromValue(downloads[key]);
+    if (candidate && isHttpUrl(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (const value of Object.values(downloads)) {
+    const candidate = downloadUrlFromValue(value);
+    if (candidate && isHttpUrl(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function updateDownloadKeys(): string[] {
+  const platform = process.platform;
+  const arch = process.arch;
+  const aliases = new Set<string>([
+    `${platform}-${arch}`,
+    `${platform}_${arch}`,
+    platform
+  ]);
+
+  if (platform === "darwin") {
+    aliases.add(`macos-${arch}`);
+    aliases.add(`macos_${arch}`);
+    aliases.add("macos");
+  }
+
+  if (platform === "win32") {
+    aliases.add(`windows-${arch}`);
+    aliases.add(`windows_${arch}`);
+    aliases.add("windows");
+  }
+
+  if (platform === "linux") {
+    const debArchName = arch === "x64" ? "amd64" : arch === "arm64" ? "arm64" : arch;
+    aliases.add(`linux-${debArchName}`);
+    aliases.add(`linux_${debArchName}`);
+    aliases.add(`deb-${debArchName}`);
+    aliases.add(`deb_${debArchName}`);
+    aliases.add("deb");
+  }
+
+  return [...aliases];
+}
+
+function downloadUrlFromValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  return stringOrUndefined(asRecord(value).url);
+}
+
+function compareVersions(left: string, right: string): number {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+function versionParts(value: string): number[] {
+  return value
+    .trim()
+    .replace(/^v/i, "")
+    .split(/[.+-]/)
+    .map(part => Number.parseInt(part, 10))
+    .filter(Number.isFinite);
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 function sendCodexEvent(event: CodexAdapterEvent): void {
   mainWindow?.webContents.send("codex:event", event);
+}
+
+async function ensureCodexConnected(): Promise<CodexAdapter> {
+  if (!initializeResponse) {
+    if (!connectPromise) {
+      connectPromise = connectCodexAdapter()
+        .then(response => {
+          initializeResponse = response;
+          return response;
+        })
+        .finally(() => {
+          connectPromise = null;
+        });
+    }
+    await connectPromise;
+  }
+
+  if (!adapter) {
+    throw new Error("Codex adapter is not connected");
+  }
+  return adapter;
+}
+
+async function loadPeriodicTasks(): Promise<void> {
+  if (!periodicTasksLoadedPromise) {
+    periodicTasksLoadedPromise = readPeriodicTasks()
+      .then(tasks => {
+        periodicTasks = tasks;
+        schedulePeriodicTaskTimer();
+      })
+      .catch(error => {
+        periodicTasks = [];
+        throw error;
+      });
+  }
+  return periodicTasksLoadedPromise;
+}
+
+async function readPeriodicTasks(): Promise<PeriodicTask[]> {
+  try {
+    const raw = await readFile(periodicTasksPath(), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map(normalizePeriodicTask).filter(Boolean) as PeriodicTask[];
+  } catch {
+    return [];
+  }
+}
+
+async function savePeriodicTasks(): Promise<void> {
+  await mkdir(path.dirname(periodicTasksPath()), { recursive: true });
+  await writeFile(
+    periodicTasksPath(),
+    `${JSON.stringify(periodicTasks, null, 2)}\n`,
+    "utf8"
+  );
+  mainWindow?.webContents.send("periodic-tasks:updated", periodicTasks);
+  schedulePeriodicTaskTimer();
+}
+
+function periodicTasksPath(): string {
+  return path.join(app.getPath("userData"), "periodic-tasks.json");
+}
+
+async function createPeriodicTask(input: PeriodicTaskInput): Promise<PeriodicTask> {
+  await loadPeriodicTasks();
+  const now = Date.now();
+  const normalizedInput = normalizePeriodicTaskInput(input);
+  const task: PeriodicTask = {
+    ...normalizedInput,
+    id: randomId(),
+    enabled: input.enabled ?? true,
+    nextRunAt: input.enabled === false
+      ? undefined
+      : nextPeriodicTaskRunAt(normalizedInput, now, true),
+    status: input.enabled === false ? "paused" : "waiting",
+    createdAt: now,
+    updatedAt: now
+  };
+  periodicTasks = [task, ...periodicTasks];
+  await savePeriodicTasks();
+  return task;
+}
+
+async function updatePeriodicTask(
+  taskId: string,
+  patch: Partial<PeriodicTaskInput>
+): Promise<PeriodicTask> {
+  await loadPeriodicTasks();
+  const task = periodicTasks.find(item => item.id === taskId);
+  if (!task) {
+    throw new Error("Periodic task not found");
+  }
+
+  const nextInput = normalizePeriodicTaskInput({
+    name: patch.name ?? task.name,
+    enabled: patch.enabled ?? task.enabled,
+    workspace: patch.workspace ?? task.workspace,
+    sessionMode: patch.sessionMode ?? task.sessionMode,
+    sessionId: patch.sessionId ?? task.sessionId,
+    prompt: patch.prompt ?? task.prompt,
+    trigger: patch.trigger ?? task.trigger,
+    intervalMs: patch.intervalMs ?? task.intervalMs,
+    scheduleFrequency: patch.scheduleFrequency ?? task.scheduleFrequency,
+    scheduleTime: patch.scheduleTime ?? task.scheduleTime,
+    scheduleWeekdays: patch.scheduleWeekdays ?? task.scheduleWeekdays,
+    model: patch.model ?? task.model,
+    effort: patch.effort === undefined ? task.effort : patch.effort,
+    permissionMode: patch.permissionMode ?? task.permissionMode
+  });
+  const enabled = patch.enabled ?? task.enabled;
+  const now = Date.now();
+  const scheduleChanged =
+    patch.trigger !== undefined ||
+    patch.intervalMs !== undefined ||
+    patch.scheduleFrequency !== undefined ||
+    patch.scheduleTime !== undefined ||
+    patch.scheduleWeekdays !== undefined ||
+    (patch.enabled === true && !task.enabled);
+  const updated: PeriodicTask = {
+    ...task,
+    ...nextInput,
+    enabled,
+    status:
+      task.status === "running"
+        ? "running"
+        : enabled
+          ? task.status === "error"
+            ? "waiting"
+            : "waiting"
+          : "paused",
+    nextRunAt:
+      task.status === "running"
+        ? task.nextRunAt
+        : enabled
+          ? scheduleChanged
+            ? nextPeriodicTaskRunAt(nextInput, now, true)
+            : task.nextRunAt ?? nextPeriodicTaskRunAt(nextInput, now, true)
+          : undefined,
+    lastError: enabled ? undefined : task.lastError,
+    updatedAt: now
+  };
+
+  periodicTasks = periodicTasks.map(item => item.id === taskId ? updated : item);
+  await savePeriodicTasks();
+  return updated;
+}
+
+async function deletePeriodicTask(taskId: string): Promise<void> {
+  await loadPeriodicTasks();
+  periodicTasks = periodicTasks.filter(item => item.id !== taskId);
+  await savePeriodicTasks();
+}
+
+async function runPeriodicTaskNow(taskId: string): Promise<PeriodicTask> {
+  await loadPeriodicTasks();
+  const task = periodicTasks.find(item => item.id === taskId);
+  if (!task) {
+    throw new Error("Periodic task not found");
+  }
+  await runPeriodicTask(task, { manual: true });
+  return periodicTasks.find(item => item.id === taskId) ?? task;
+}
+
+function schedulePeriodicTaskTimer(): void {
+  if (periodicTaskTimer) {
+    clearTimeout(periodicTaskTimer);
+    periodicTaskTimer = null;
+  }
+
+  const now = Date.now();
+  const nextRunAt = periodicTasks
+    .filter(task => task.enabled && task.status !== "running")
+    .map(task => task.nextRunAt ?? now)
+    .reduce<number | null>((earliest, value) =>
+      earliest === null || value < earliest ? value : earliest, null);
+
+  if (nextRunAt === null) {
+    return;
+  }
+
+  periodicTaskTimer = setTimeout(() => {
+    periodicTaskTimer = null;
+    periodicTaskTickPromise ??= runDuePeriodicTasks().finally(() => {
+      periodicTaskTickPromise = null;
+      schedulePeriodicTaskTimer();
+    });
+  }, Math.max(nextRunAt - now, 0));
+}
+
+async function runDuePeriodicTasks(): Promise<void> {
+  await loadPeriodicTasks();
+  const now = Date.now();
+  const dueTasks = periodicTasks.filter(
+    task => task.enabled && task.status !== "running" && (task.nextRunAt ?? now) <= now
+  );
+
+  for (const task of dueTasks) {
+    await runPeriodicTask(task, { manual: false });
+  }
+}
+
+async function runPeriodicTask(
+  task: PeriodicTask,
+  options: { manual: boolean }
+): Promise<void> {
+  const current = periodicTasks.find(item => item.id === task.id);
+  if (!current) {
+    return;
+  }
+  if (!options.manual && !current.enabled) {
+    return;
+  }
+  if (current.status === "running") {
+    return;
+  }
+
+  try {
+    const codex = await ensureCodexConnected();
+    const sessionId = await ensurePeriodicTaskSession(codex, current);
+    const busyTurnId = activeTurnByThread.get(sessionId);
+    if (busyTurnId) {
+      await patchPeriodicTask(current.id, {
+        status: "waiting",
+        nextRunAt: Date.now() + 30_000,
+        lastError: `Target session is already running turn ${busyTurnId.slice(0, 8)}.`
+      });
+      return;
+    }
+
+    await codex.resumeThread(sessionId, {
+      cwd: current.workspace,
+      ...periodicTaskPermissionOptions(current.permissionMode),
+      ...periodicTaskModelOptions(current)
+    }).catch(() => undefined);
+
+    const response = await codex.startTurn(sessionId, current.prompt, {
+      ...periodicTaskPermissionOptions(current.permissionMode),
+      ...periodicTaskModelOptions(current)
+    });
+
+    activeTurnByThread.set(sessionId, response.turn.id);
+    await patchPeriodicTask(current.id, {
+      sessionId,
+      status: "running",
+      activeTurnId: response.turn.id,
+      lastRunAt: Date.now(),
+      lastError: undefined,
+      nextRunAt: undefined
+    });
+  } catch (error) {
+    await patchPeriodicTask(current.id, {
+      status: "error",
+      activeTurnId: undefined,
+      lastError: error instanceof Error ? error.message : String(error),
+      nextRunAt: current.enabled ? nextPeriodicTaskRunAt(current, Date.now(), false) : undefined
+    });
+  }
+}
+
+async function ensurePeriodicTaskSession(
+  codex: CodexAdapter,
+  task: PeriodicTask
+): Promise<string> {
+  if (task.sessionMode === "existing") {
+    if (!task.sessionId) {
+      throw new Error("Periodic task requires a target session.");
+    }
+    return task.sessionId;
+  }
+
+  if (task.sessionId) {
+    return task.sessionId;
+  }
+
+  const response = await codex.startThread({
+    cwd: task.workspace,
+    ...periodicTaskPermissionOptions(task.permissionMode),
+    ...periodicTaskModelOptions(task)
+  });
+  const sessionId = response.thread.id;
+  await codex.setThreadName(sessionId, `Periodic: ${task.name}`).catch(() => undefined);
+  await patchPeriodicTask(task.id, { sessionId });
+  return sessionId;
+}
+
+async function patchPeriodicTask(
+  taskId: string,
+  patch: Partial<PeriodicTask>
+): Promise<void> {
+  periodicTasks = periodicTasks.map(task =>
+    task.id === taskId
+      ? {
+          ...task,
+          ...patch,
+          updatedAt: Date.now()
+        }
+      : task
+  );
+  await savePeriodicTasks();
+}
+
+function handlePeriodicTaskCodexEvent(event: CodexAdapterEvent): void {
+  if (event.type === "turn.started") {
+    activeTurnByThread.set(event.threadId, event.turnId);
+    return;
+  }
+
+  if (event.type !== "turn.completed") {
+    return;
+  }
+
+  const activeTurnId = activeTurnByThread.get(event.threadId);
+  if (!activeTurnId || activeTurnId === event.turnId) {
+    activeTurnByThread.delete(event.threadId);
+  }
+
+  const task = periodicTasks.find(item => item.activeTurnId === event.turnId);
+  if (!task) {
+    return;
+  }
+
+  const now = Date.now();
+  void patchPeriodicTask(task.id, {
+    activeTurnId: undefined,
+    lastCompletedAt: now,
+    lastError: undefined,
+    nextRunAt: task.enabled ? nextPeriodicTaskRunAt(task, now, false) : undefined,
+    status: task.enabled ? "waiting" : "paused"
+  });
+}
+
+function nextPeriodicTaskRunAt(
+  task: Pick<
+    PeriodicTask,
+    "trigger" | "intervalMs" | "scheduleFrequency" | "scheduleTime" | "scheduleWeekdays"
+  >,
+  from: number,
+  allowImmediateInterval: boolean
+): number {
+  if (task.trigger !== "schedule") {
+    return allowImmediateInterval ? from : from + task.intervalMs;
+  }
+
+  return nextScheduledTaskRunAt(
+    task.scheduleFrequency,
+    task.scheduleTime,
+    task.scheduleWeekdays,
+    from
+  );
+}
+
+function nextScheduledTaskRunAt(
+  frequency: PeriodicTaskScheduleFrequency,
+  time: string,
+  weekdays: number[],
+  from: number
+): number {
+  const [hourText, minuteText] = time.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const base = new Date(from);
+  const daysToCheck = frequency === "weekly" ? 14 : 8;
+  const activeWeekdays = weekdays.length > 0 ? weekdays : [base.getDay()];
+
+  for (let offset = 0; offset < daysToCheck; offset += 1) {
+    const candidate = new Date(base);
+    candidate.setDate(base.getDate() + offset);
+    candidate.setHours(hour, minute, 0, 0);
+    if (frequency === "weekly" && !activeWeekdays.includes(candidate.getDay())) {
+      continue;
+    }
+    if (candidate.getTime() > from) {
+      return candidate.getTime();
+    }
+  }
+
+  const fallback = new Date(base);
+  fallback.setDate(base.getDate() + 1);
+  fallback.setHours(hour, minute, 0, 0);
+  return fallback.getTime();
+}
+
+function normalizePeriodicTaskInput(input: PeriodicTaskInput): Omit<
+  PeriodicTask,
+  "id" | "status" | "activeTurnId" | "nextRunAt" | "lastRunAt" | "lastCompletedAt" | "lastError" | "createdAt" | "updatedAt"
+> {
+  const name = String(input.name ?? "").trim();
+  const workspace = String(input.workspace ?? "").trim();
+  const prompt = String(input.prompt ?? "").trim();
+  const sessionMode = input.sessionMode === "existing" ? "existing" : "create_once";
+  const trigger = input.trigger === "schedule" ? "schedule" : "interval";
+  const scheduleFrequency = input.scheduleFrequency === "weekly" ? "weekly" : "daily";
+  const scheduleTime = normalizeScheduleTime(input.scheduleTime);
+  const scheduleWeekdays = normalizeScheduleWeekdays(input.scheduleWeekdays);
+
+  if (!name) {
+    throw new Error("Periodic task name is required.");
+  }
+  if (!workspace) {
+    throw new Error("Periodic task workspace is required.");
+  }
+  if (!prompt) {
+    throw new Error("Periodic task prompt is required.");
+  }
+  if (sessionMode === "existing" && !input.sessionId) {
+    throw new Error("Choose a session or use a dedicated session.");
+  }
+
+  return {
+    name,
+    enabled: input.enabled ?? true,
+    workspace,
+    sessionMode,
+    sessionId: stringOrUndefined(input.sessionId),
+    prompt,
+    trigger,
+    intervalMs: Math.max(Math.floor(Number(input.intervalMs) || 0), 60_000),
+    scheduleFrequency,
+    scheduleTime,
+    scheduleWeekdays,
+    model: stringOrUndefined(input.model),
+    effort: isReasoningEffort(input.effort) ? input.effort : undefined,
+    permissionMode: isPeriodicTaskPermissionMode(input.permissionMode)
+      ? input.permissionMode
+      : "default"
+  };
+}
+
+function normalizePeriodicTask(value: unknown): PeriodicTask | null {
+  const record = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const id = stringOrUndefined(record.id);
+  const name = stringOrUndefined(record.name);
+  const workspace = stringOrUndefined(record.workspace);
+  const prompt = stringOrUndefined(record.prompt);
+  if (!id || !name || !workspace || !prompt) {
+    return null;
+  }
+
+  const sessionMode = record.sessionMode === "existing" ? "existing" : "create_once";
+  const status = isPeriodicTaskStatus(record.status) ? record.status : "waiting";
+  const permissionMode = isPeriodicTaskPermissionMode(record.permissionMode)
+    ? record.permissionMode
+    : "default";
+  const enabled = typeof record.enabled === "boolean" ? record.enabled : true;
+  const trigger = record.trigger === "schedule" ? "schedule" : "interval";
+  const intervalMs = Math.max(Math.floor(Number(record.intervalMs) || 0), 60_000);
+  const scheduleFrequency = record.scheduleFrequency === "weekly" ? "weekly" : "daily";
+  const scheduleTime = normalizeScheduleTime(record.scheduleTime);
+  const scheduleWeekdays = normalizeScheduleWeekdays(record.scheduleWeekdays);
+  const now = Date.now();
+  const recoveredRunningTask = status === "running";
+  const normalizedStatus = enabled
+    ? recoveredRunningTask
+      ? "waiting"
+      : status
+    : "paused";
+
+  return {
+    id,
+    name,
+    enabled,
+    workspace,
+    sessionMode,
+    sessionId: stringOrUndefined(record.sessionId),
+    prompt,
+    trigger,
+    intervalMs,
+    scheduleFrequency,
+    scheduleTime,
+    scheduleWeekdays,
+    model: stringOrUndefined(record.model),
+    effort: isReasoningEffort(record.effort) ? record.effort : undefined,
+    permissionMode,
+    nextRunAt: recoveredRunningTask
+      ? now
+      : numberOrUndefined(record.nextRunAt) ??
+        (enabled
+          ? nextPeriodicTaskRunAt(
+              { trigger, intervalMs, scheduleFrequency, scheduleTime, scheduleWeekdays },
+              now,
+              true
+            )
+          : undefined),
+    lastRunAt: numberOrUndefined(record.lastRunAt),
+    lastCompletedAt: numberOrUndefined(record.lastCompletedAt),
+    lastError: recoveredRunningTask
+      ? "Desktop restarted while this task was running."
+      : stringOrUndefined(record.lastError),
+    status: normalizedStatus,
+    activeTurnId: undefined,
+    createdAt: numberOrUndefined(record.createdAt) ?? now,
+    updatedAt: numberOrUndefined(record.updatedAt) ?? now
+  };
+}
+
+function periodicTaskPermissionOptions(value: PeriodicTaskPermissionMode): {
+  approvalPolicy: string;
+  approvalsReviewer: string;
+  permissionProfile: string;
+  sandbox?: string;
+  sandboxPolicy?: JsonObject;
+} {
+  if (value === "full-access") {
+    return {
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      permissionProfile: "full-access",
+      sandbox: "danger-full-access",
+      sandboxPolicy: { type: "dangerFullAccess" }
+    };
+  }
+  return {
+    approvalPolicy: "on-request",
+    approvalsReviewer: value === "auto-review" ? "auto-reviewer" : "user",
+    permissionProfile: "workspace-write"
+  };
+}
+
+function periodicTaskModelOptions(task: PeriodicTask): {
+  model?: string;
+  effort?: ReasoningEffort | null;
+} {
+  return {
+    model: task.model,
+    effort: task.effort
+  };
+}
+
+function normalizeScheduleTime(value: unknown): string {
+  if (typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    return value;
+  }
+  return "09:00";
+}
+
+function normalizeScheduleWeekdays(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [1];
+  }
+  const weekdays = Array.from(new Set(
+    value
+      .map(item => Math.floor(Number(item)))
+      .filter(item => item >= 0 && item <= 6)
+  )).sort((a, b) => a - b);
+  return weekdays.length > 0 ? weekdays : [1];
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+  );
+}
+
+function isPeriodicTaskStatus(value: unknown): value is PeriodicTaskStatus {
+  return (
+    value === "idle" ||
+    value === "waiting" ||
+    value === "running" ||
+    value === "paused" ||
+    value === "error"
+  );
+}
+
+function isPeriodicTaskPermissionMode(
+  value: unknown
+): value is PeriodicTaskPermissionMode {
+  return value === "default" || value === "auto-review" || value === "full-access";
+}
+
+function randomId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 async function attachmentTempDir(): Promise<string> {
