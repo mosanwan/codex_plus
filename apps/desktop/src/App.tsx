@@ -228,7 +228,7 @@ const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.collapsedWorkspaces";
 const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
 const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
 const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
-const CLOUD_RELAY_ENDPOINT = "https://codex-bridge.three.ink";
+const CLOUD_RELAY_ENDPOINT = "wss://codex-bridge.three.ink";
 const PERMISSIONS_STORAGE_KEY = "codep.defaultPermissions";
 const THEME_STORAGE_KEY = "codep.theme";
 const LANGUAGE_STORAGE_KEY = "codep.language";
@@ -767,6 +767,7 @@ export function App() {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>(
     DEMO_MODE ? DEMO_TRANSCRIPT : []
   );
+  const transcriptRef = useRef<TranscriptEntry[]>(DEMO_MODE ? DEMO_TRANSCRIPT : []);
   const [approvals, setApprovals] = useState<ApprovalEntry[]>([]);
   const [composer, setComposer] = useState("");
   const [composerCompletion, setComposerCompletion] =
@@ -875,6 +876,11 @@ export function App() {
   const recentSessions = [...workspaceSessionEntries].sort(
     (left, right) => (right.session.updatedAt ?? 0) - (left.session.updatedAt ?? 0)
   );
+
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
+
   const favoriteSessions = favoriteSessionIds.size
     ? workspaceSessionEntries.filter(({ session: item }) =>
         favoriteSessionIds.has(item.threadId)
@@ -1026,7 +1032,11 @@ export function App() {
     if (!isActiveEventThread(threadId)) {
       return;
     }
-    setTranscript(updater);
+    setTranscript(previous => {
+      const next = updater(previous);
+      transcriptRef.current = next;
+      return next;
+    });
     requestScrollToBottom();
   }
 
@@ -1706,9 +1716,10 @@ export function App() {
     });
   }
 
-  function removeWorkspace(cwd: string) {
+  function removeWorkspace(cwd: string, options: { confirm?: boolean } = {}) {
     const workspaceLabel = workspaceName(cwd);
     if (
+      options.confirm !== false &&
       !window.confirm(
         `Remove ${workspaceLabel} from Codex+? Codex session history on disk will not be deleted.`
       )
@@ -1796,9 +1807,12 @@ export function App() {
     });
   }
 
-  function removeSession(cwd: string, target: SessionView) {
+  function removeSession(cwd: string, target: SessionView, options: { confirm?: boolean } = {}) {
     const sessionLabel = target.title || target.threadId.slice(0, 8);
-    if (!window.confirm(t("removeSessionConfirm", { title: sessionLabel }))) {
+    if (
+      options.confirm !== false &&
+      !window.confirm(t("removeSessionConfirm", { title: sessionLabel }))
+    ) {
       return;
     }
 
@@ -2574,6 +2588,20 @@ export function App() {
       return;
     }
 
+    if (envelope.type === "client.remove_session") {
+      const cwd = envelope.payload?.workspace;
+      const sessionId = envelope.payload?.sessionId;
+      if (!cwd || !sessionId) {
+        return;
+      }
+      const target =
+        (workspaceSessions[cwd] ?? []).find(item => item.threadId === sessionId) ??
+        ({ threadId: sessionId, title: sessionId.slice(0, 8), updatedAt: undefined } satisfies SessionView);
+      ackClientCommand(clientCommandId);
+      removeSession(cwd, target, { confirm: false });
+      return;
+    }
+
     if (envelope.type === "client.set_session_icon") {
       const sessionId = envelope.payload?.sessionId;
       const iconId = envelope.payload?.iconId;
@@ -2591,6 +2619,15 @@ export function App() {
       if (sessionId && typeof favorite === "boolean") {
         setFavoriteSession(sessionId, favorite);
         setStatus(favorite ? "Session favorited from mobile." : "Session unfavorited from mobile.");
+      }
+      ackClientCommand(clientCommandId);
+      return;
+    }
+
+    if (envelope.type === "client.remove_workspace") {
+      const cwd = envelope.payload?.workspace?.trim();
+      if (cwd) {
+        removeWorkspace(cwd, { confirm: false });
       }
       ackClientCommand(clientCommandId);
       return;
@@ -2826,8 +2863,25 @@ export function App() {
 
   function finalAssistantMessageForTurn(threadId: string, turnId: string): string {
     const current = turnAssistantTextRef.current[threadId];
+    const latestAssistant = latestAssistantTranscriptText(threadId);
+    if (latestAssistant) {
+      return latestAssistant;
+    }
     if (current?.turnId === turnId) {
       return current.text;
+    }
+    return "";
+  }
+
+  function latestAssistantTranscriptText(threadId: string): string {
+    if (!isActiveEventThread(threadId)) {
+      return "";
+    }
+    for (let index = transcriptRef.current.length - 1; index >= 0; index -= 1) {
+      const entry = transcriptRef.current[index];
+      if (entry?.role === "assistant" && entry.text.trim()) {
+        return entry.text;
+      }
     }
     return "";
   }
@@ -4846,7 +4900,8 @@ function isLegacyDefaultRelayEndpoint(value: string): boolean {
     normalized === "ws://localhost:8909" ||
     normalized === "ws://:8909" ||
     normalized === "wss://tx-bridge.three.ink" ||
-    normalized === "https://tx-bridge.three.ink"
+    normalized === "https://tx-bridge.three.ink" ||
+    normalized === "https://codex-bridge.three.ink"
   );
 }
 

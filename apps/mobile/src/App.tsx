@@ -82,7 +82,7 @@ const RELAY_API_KEY_STORAGE_KEY = "codep.relayApiKey";
 const RELAY_DEVICE_ID_STORAGE_KEY = "codep.relayDeviceId";
 const RELAY_DESKTOP_DEVICE_ID_STORAGE_KEY = "codep.relayDesktopDeviceId";
 const RELAY_LAST_EVENT_ID_STORAGE_KEY = "codep.relayLastEventId";
-const CLOUD_RELAY_ENDPOINT = "https://codex-bridge.three.ink";
+const CLOUD_RELAY_ENDPOINT = "wss://codex-bridge.three.ink";
 const SYSTEM_NOTIFICATIONS_ENABLED_STORAGE_KEY = "codep.systemNotificationsEnabled";
 const NOTIFICATION_VIBRATION_ENABLED_STORAGE_KEY = "codep.notificationVibrationEnabled";
 const NOTIFICATION_SOUND_ENABLED_STORAGE_KEY = "codep.notificationSoundEnabled";
@@ -3823,7 +3823,8 @@ function isLegacyDefaultRelayEndpoint(value: string): boolean {
     normalized === "ws://localhost:8909" ||
     normalized === "ws://:8909" ||
     normalized === "wss://tx-bridge.three.ink" ||
-    normalized === "https://tx-bridge.three.ink"
+    normalized === "https://tx-bridge.three.ink" ||
+    normalized === "https://codex-bridge.three.ink"
   );
 }
 
