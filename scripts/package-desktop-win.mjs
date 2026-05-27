@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 if (process.platform !== "win32") {
@@ -10,6 +11,7 @@ if (process.platform !== "win32") {
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
+const require = createRequire(import.meta.url);
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const desktopPackage = JSON.parse(
   await readFile(path.join(repoRoot, "apps/desktop/package.json"), "utf8")
@@ -34,10 +36,17 @@ if (targetArch !== process.arch) {
 runNpm(["--workspace", "@codep/codex-adapter", "run", "build"]);
 runNpm(["--workspace", "@codep/desktop", "run", "build"]);
 
-const electronDist = path.join(repoRoot, "node_modules", "electron", "dist");
+const electronPackageJson = require.resolve("electron/package.json", {
+  paths: [path.join(repoRoot, "apps/desktop"), repoRoot]
+});
+const electronPackageDir = path.dirname(electronPackageJson);
+const electronDist = path.join(electronPackageDir, "dist");
 const electronExecutable = path.join(electronDist, "electron.exe");
 if (!existsSync(electronExecutable)) {
-  throw new Error(`electron.exe was not found at ${electronExecutable}. Run npm ci on Windows first.`);
+  run(process.execPath, [path.join(electronPackageDir, "install.js")]);
+}
+if (!existsSync(electronExecutable)) {
+  throw new Error(`electron.exe was not found at ${electronExecutable}. Electron install did not complete.`);
 }
 
 await rm(stagingDir, { recursive: true, force: true });
