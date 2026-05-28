@@ -2733,6 +2733,16 @@ textarea:focus-visible {
   background: var(--color-canvas);
 }
 
+.updateModal {
+  display: grid;
+  width: min(520px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-canvas);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 28%);
+}
+
 .modalHeader {
   display: flex;
   align-items: flex-start;
@@ -2779,6 +2789,28 @@ textarea:focus-visible {
   border-radius: var(--radius-md);
   padding: var(--space-lg);
   background: var(--color-canvas);
+}
+
+.updateModalBody {
+  display: grid;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+}
+
+.updateModalBody p {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  color: var(--color-body);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.updateModalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
 }
 
 .settingsSection h3 {

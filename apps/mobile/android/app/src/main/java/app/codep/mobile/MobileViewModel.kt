@@ -63,6 +63,7 @@ import java.util.UUID
 import kotlin.math.min
 
 private const val StoredMessageLimit = 240
+private const val DefaultReleaseDownloadUrl = "https://github.com/mosanwan/codex_plus/releases/latest"
 
 data class MobileUiState(
     val selectedTab: MobileTab = MobileTab.Chat,
@@ -92,6 +93,9 @@ data class MobileUiState(
     val modelEffort: String = "high",
     val modelOptions: List<ModelOption> = defaultModelOptions(),
     val status: String = "",
+    val desktopAppVersion: String = "",
+    val desktopReleaseUrl: String = "",
+    val dismissedVersionMismatch: String = "",
     val isWorking: Boolean = false,
     val composer: String = "",
     val composerCompletion: ComposerCompletion? = null,
@@ -108,6 +112,17 @@ data class MobileUiState(
 
     val hasRelaySettings: Boolean
         get() = relayEndpoint.isNotBlank() && relayApiKey.isNotBlank() && desktopDeviceId.isNotBlank()
+
+    val versionMismatchKey: String
+        get() = if (desktopAppVersion.isBlank()) "" else "$desktopAppVersion:${BuildConfig.VERSION_NAME}"
+
+    val shouldShowVersionMismatch: Boolean
+        get() = desktopAppVersion.isNotBlank() &&
+            compareVersions(desktopAppVersion, BuildConfig.VERSION_NAME) != 0 &&
+            versionMismatchKey != dismissedVersionMismatch
+
+    val updateDownloadUrl: String
+        get() = desktopReleaseUrl.ifBlank { DefaultReleaseDownloadUrl }
 }
 
 data class WorkspaceFilePreview(
@@ -203,6 +218,13 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
     fun updateLanguage(value: AppLanguage) {
         _state.update { it.copy(language = value) }
         viewModelScope.launch { preferences.saveLanguage(value) }
+    }
+
+    fun dismissVersionMismatch() {
+        val key = _state.value.versionMismatchKey
+        if (key.isBlank()) return
+        _state.update { it.copy(dismissedVersionMismatch = key) }
+        viewModelScope.launch { preferences.saveDismissedVersionMismatch(key) }
     }
 
     fun updatePermissionMode(value: String) {
@@ -709,7 +731,8 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                 lastEventId = settings.lastEventId,
                 notificationsEnabled = settings.notificationsEnabled,
                 themeMode = settings.themeMode,
-                language = settings.language
+                language = settings.language,
+                dismissedVersionMismatch = settings.dismissedVersionMismatch
             )
         }
     }
@@ -914,6 +937,8 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                 modelEffort = snapshot.modelEffort ?: current.modelEffort,
                 modelOptions = snapshot.modelOptions?.takeIf { it.isNotEmpty() } ?: current.modelOptions,
                 status = snapshot.status ?: current.status,
+                desktopAppVersion = snapshot.appVersion ?: current.desktopAppVersion,
+                desktopReleaseUrl = snapshot.releaseUrl ?: current.desktopReleaseUrl,
                 isWorking = snapshot.isWorking ?: current.isWorking
             )
         }
@@ -1143,4 +1168,26 @@ private fun defaultModelOptions(): List<ModelOption> {
         ModelOption("gpt-5-codex", "GPT-5 Codex"),
         ModelOption("o3", "o3")
     )
+}
+
+private fun compareVersions(left: String, right: String): Int {
+    val leftParts = versionParts(left)
+    val rightParts = versionParts(right)
+    val length = maxOf(leftParts.size, rightParts.size)
+    for (index in 0 until length) {
+        val leftPart = leftParts.getOrElse(index) { 0 }
+        val rightPart = rightParts.getOrElse(index) { 0 }
+        if (leftPart > rightPart) return 1
+        if (leftPart < rightPart) return -1
+    }
+    return 0
+}
+
+private fun versionParts(value: String): List<Int> {
+    return value
+        .trim()
+        .removePrefix("v")
+        .removePrefix("V")
+        .split('.', '+', '-')
+        .mapNotNull { it.toIntOrNull() }
 }

@@ -28,7 +28,7 @@ Relay 和移动端在线状态。
 ## 这个项目做什么
 
 - 提供一个桌面 Electron 应用，用来管理本机 Codex 会话。
-- 提供一个移动端 Capacitor Android 应用，用来远程控制桌面端。
+- 提供一个 Android 原生移动端应用，用来远程控制桌面端。
 - 通过 Go 编写的 WebSocket Relay 连接桌面端和移动端。
 - 使用 Relay API key 隔离不同用户。
 - 移动端可通过 API key 自动列出桌面设备，不需要手动填写设备 ID。
@@ -43,7 +43,7 @@ Relay 和移动端在线状态。
 .
 ├── apps/
 │   ├── desktop/              # React + Vite + Electron 桌面端
-│   └── mobile/               # React + Vite + Capacitor Android 移动端
+│   └── mobile/               # Android 原生移动端
 ├── packages/
 │   └── codex-adapter/        # 对 `codex app-server` 的适配层
 ├── services/
@@ -64,12 +64,12 @@ Codex+ 由五个核心部分组成：
 - Codex adapter：TypeScript 包，连接 `codex app-server`，负责启动或恢复 thread、发送 turn、
   中断 turn，并把事件规范化。
 - Relay 服务：Go 服务，负责 API key 鉴权、桌面与移动端消息转发、在线状态、SQLite 持久事件和管理后台。
-- 移动端应用：React + Capacitor Android 客户端，连接 Relay、选择桌面设备、同步会话状态并发送远程命令。
+- 移动端应用：Android 原生客户端，连接 Relay、选择桌面设备、同步会话状态并发送远程命令。
 
 ```text
 ┌──────────────────────────┐
 │       Android App         │
-│ React + Capacitor         │
+│ Kotlin + Compose          │
 │ 会话、聊天、审批           │
 └─────────────┬────────────┘
               │ wss + API key
@@ -196,14 +196,6 @@ Manifest 示例：
 }
 ```
 
-启动移动端 Web 开发服务：
-
-```bash
-npm run dev:mobile
-```
-
-移动端 dev server 监听 `0.0.0.0`，同一局域网内的手机可以通过工作站 IP 访问。
-
 ## 配置 Relay
 
 桌面端和移动端必须使用同一个 Relay endpoint 和 API key。
@@ -227,11 +219,10 @@ API key:        <你的用户 API key>
 
 ## Android 构建与安装
 
-构建并同步 Android 项目：
+构建 Android 项目：
 
 ```bash
 npm run build -w @codep/mobile
-npm run cap:sync -w @codep/mobile
 ```
 
 在 Android Studio 中打开项目：
@@ -252,7 +243,7 @@ npm run install:mobile:android
 npm run install:mobile:android -- --target <adb-device-id>
 ```
 
-安装脚本会构建移动端、同步 Capacitor、构建 debug APK、通过 `adb` 安装，并启动应用。
+安装脚本会构建 debug APK、通过 `adb` 安装，并启动应用。
 
 如果 Gradle 找不到 Android SDK，创建 `apps/mobile/android/local.properties`：
 
@@ -304,7 +295,7 @@ npm run build
 npm run probe:adapter -- --turn "Say hello briefly."
 npm run dev:relay
 npm run dev:desktop
-npm run dev:mobile
+npm run dev:mobile:android
 npm run install:mobile:android
 npm run deploy:relay
 ```

@@ -123,7 +123,9 @@ data class DesktopSnapshot(
     val contextUsage: ContextUsage? = null,
     val rateLimitUsage: RateLimitUsage? = null,
     val modelOptions: List<ModelOption>? = null,
-    val status: String? = null
+    val status: String? = null,
+    val appVersion: String? = null,
+    val releaseUrl: String? = null
 )
 
 data class RelayDesktopDevice(

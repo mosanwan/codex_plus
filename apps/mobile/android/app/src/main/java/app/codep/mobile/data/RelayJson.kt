@@ -173,7 +173,9 @@ fun snapshotFromPayload(payload: JsonElement?): DesktopSnapshot? {
             )
         },
         modelOptions = root["modelOptions"]?.let(::modelOptionsFromJson),
-        status = root.optionalString("status")
+        status = root.optionalString("status"),
+        appVersion = root.optionalString("appVersion"),
+        releaseUrl = root.optionalString("releaseUrl")
     )
 }
 

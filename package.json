@@ -15,8 +15,7 @@
     "package:desktop:win": "node scripts/package-desktop-win.mjs",
     "deploy:relay": "node scripts/deploy-relay.mjs",
     "install:mobile:android": "node scripts/install-mobile-android.mjs",
-    "dev:mobile": "npm run dev -w @codep/mobile -- --port 5175",
-    "dev:mobile:lan": "npm run dev:mobile",
+    "dev:mobile:android": "npm run android:run -w @codep/mobile",
     "dev:desktop": "npm run dev:vite -w @codep/desktop -- --port 5174",
     "dev:relay": "cd services/relay && go run . -addr 0.0.0.0:8909",
     "probe:adapter": "npm --workspace @codep/codex-adapter run probe --"

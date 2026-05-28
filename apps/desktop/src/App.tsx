@@ -278,6 +278,7 @@ const BACKGROUND_SESSION_REFRESH_DELAY_MS = 350;
 const RELIABLE_RELAY_RETRY_MS = 5000;
 const DESKTOP_SNAPSHOT_DEBOUNCE_MS = 500;
 const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 10_000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const RELAY_EVENT_TEXT_MAX_CHARS = 1200;
 const RELAY_MESSAGE_TEXT_MAX_CHARS = 4000;
 const RELAY_PROGRESS_DEBOUNCE_MS = 1000;
@@ -315,8 +316,10 @@ const UI_TEXT = {
     newCodexSession: "New Codex session",
     openSettings: "Open settings",
     updateAvailable: "Update available",
-    updateAvailableBody: "Version {version} is ready to download.",
-    downloadUpdate: "Download",
+    updateAvailableBody: "Version {version} has been downloaded and is ready to install.",
+    updateAvailableBodyRemote: "Version {version} is ready to download.",
+    downloadUpdate: "Open file",
+    openRelease: "Open release",
     dismissUpdate: "Dismiss update notice",
     startSessionTitle: "Start a local Codex session",
     startSessionBody: "Add workspaces on the left, then open or create a session under any workspace.",
@@ -513,8 +516,10 @@ const UI_TEXT = {
     newCodexSession: "新的 Codex Session",
     openSettings: "打开设置",
     updateAvailable: "发现新版本",
-    updateAvailableBody: "{version} 版本已可下载。",
-    downloadUpdate: "下载",
+    updateAvailableBody: "{version} 版本已下载，可以安装。",
+    updateAvailableBodyRemote: "{version} 版本已可下载。",
+    downloadUpdate: "打开文件",
+    openRelease: "打开 Release",
     dismissUpdate: "关闭版本提示",
     startSessionTitle: "开始本地 Codex Session",
     startSessionBody: "在左侧添加工作区，然后打开或创建该工作区下的 Session。",
@@ -952,6 +957,7 @@ export function App() {
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(
     () => window.localStorage.getItem(UPDATE_DISMISSED_STORAGE_KEY) ?? ""
   );
+  const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const relaySocketRef = useRef<WebSocket | null>(null);
   const relayReconnectTimerRef = useRef<number | null>(null);
@@ -1046,7 +1052,7 @@ export function App() {
     relayState === "connected" || relayState === "connecting" ? Wifi : WifiOff;
   const visibleDesktopUpdate =
     desktopUpdate?.updateAvailable &&
-    desktopUpdate.downloadUrl &&
+    (desktopUpdate.downloadedPath || desktopUpdate.downloadUrl || desktopUpdate.releaseUrl) &&
     desktopUpdate.latestVersion !== dismissedUpdateVersion
       ? desktopUpdate
       : null;
@@ -1130,23 +1136,38 @@ export function App() {
   }, [desktopApi]);
 
   useEffect(() => {
-    if (DEMO_MODE || !desktopApi) {
+    if (DEMO_MODE || !desktopUpdate) {
       return;
+    }
+    scheduleDesktopSnapshot();
+    scheduleReliableDesktopSnapshot();
+  }, [desktopUpdate]);
+
+  useEffect(() => {
+    if (DEMO_MODE || !desktopApi) {
+      return undefined;
     }
 
     let disposed = false;
-    void desktopApi.checkForUpdates()
+    const check = () => {
+      void desktopApi.checkForUpdates()
       .then(info => {
         if (!disposed && info.updateAvailable) {
           setDesktopUpdate(info);
+          setIsUpdateDialogOpen(true);
         }
       })
       .catch(() => {
         // Update checks should not interrupt the local workflow.
       });
+    };
+
+    check();
+    const interval = window.setInterval(check, UPDATE_CHECK_INTERVAL_MS);
 
     return () => {
       disposed = true;
+      window.clearInterval(interval);
     };
   }, [desktopApi]);
 
@@ -3198,7 +3219,9 @@ export function App() {
       modelEffort,
       contextUsage,
       rateLimitUsage,
-      isWorking: session ? Boolean(runningTurnsBySession[session.threadId]) : false
+      isWorking: session ? Boolean(runningTurnsBySession[session.threadId]) : false,
+      appVersion: desktopPackage.version,
+      releaseUrl: desktopUpdate?.releaseUrl ?? desktopUpdate?.downloadUrl ?? null
     };
   }
 
@@ -3840,17 +3863,30 @@ export function App() {
   }
 
   async function openDesktopUpdateDownload(update: DesktopUpdateInfo) {
-    if (!desktopApi || !update.downloadUrl) {
+    if (!desktopApi) {
       return;
     }
 
     try {
-      await desktopApi.openUpdateDownload(update.downloadUrl);
+      const openedDownloadedFile = Boolean(update.downloadedPath);
+      if (update.downloadedPath) {
+        await desktopApi.revealDownloadedUpdate(update.downloadedPath);
+      } else if (update.downloadUrl) {
+        await desktopApi.openUpdateDownload(update.downloadUrl);
+      } else if (update.releaseUrl) {
+        await desktopApi.openUpdateDownload(update.releaseUrl);
+      } else {
+        return;
+      }
       dismissDesktopUpdate(update.latestVersion);
       setStatus(
         language === "zh-CN"
-          ? `已打开 ${update.latestVersion ?? "新版"} 下载页面。`
-          : `Opened download page for ${update.latestVersion ?? "the new version"}.`
+          ? openedDownloadedFile
+            ? `已打开 ${update.latestVersion ?? "新版"} 更新文件。`
+            : `已打开 ${update.latestVersion ?? "新版"} 下载页面。`
+          : openedDownloadedFile
+            ? `Opened update file for ${update.latestVersion ?? "the new version"}.`
+            : `Opened download page for ${update.latestVersion ?? "the new version"}.`
       );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -3859,6 +3895,73 @@ export function App() {
 
   return (
     <main className={`shell${isSidebarCollapsed ? " sidebarCollapsed" : ""}`}>
+      {visibleDesktopUpdate && isUpdateDialogOpen ? (
+        <div
+          className="modalBackdrop"
+          role="presentation"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) {
+              setIsUpdateDialogOpen(false);
+            }
+          }}
+        >
+          <section
+            aria-labelledby="desktop-update-title"
+            aria-modal="true"
+            className="updateModal"
+            role="dialog"
+          >
+            <header className="modalHeader">
+              <div>
+                <h2 id="desktop-update-title">{t("updateAvailable")}</h2>
+                <p>
+                  {t(
+                    visibleDesktopUpdate.downloadedPath
+                      ? "updateAvailableBody"
+                      : "updateAvailableBodyRemote",
+                    { version: visibleDesktopUpdate.latestVersion ?? "" }
+                  )}
+                </p>
+              </div>
+              <button
+                aria-label={t("dismissUpdate")}
+                className="iconOnlyButton compactIconButton"
+                type="button"
+                onClick={() => setIsUpdateDialogOpen(false)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <div className="updateModalBody">
+              {visibleDesktopUpdate.releaseNotes ? (
+                <p>{visibleDesktopUpdate.releaseNotes}</p>
+              ) : null}
+              <div className="updateModalActions">
+                <button
+                  className="miniButton primaryMiniButton"
+                  type="button"
+                  onClick={() => void openDesktopUpdateDownload(visibleDesktopUpdate)}
+                >
+                  <Download size={14} />
+                  <span>
+                    {visibleDesktopUpdate.downloadedPath
+                      ? t("downloadUpdate")
+                      : t("openRelease")}
+                  </span>
+                </button>
+                <button
+                  className="miniButton"
+                  type="button"
+                  onClick={() => dismissDesktopUpdate(visibleDesktopUpdate.latestVersion)}
+                >
+                  <X size={14} />
+                  <span>{t("dismissUpdate")}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <aside
         className="sidebar"
         aria-label={t("sessions")}
@@ -3890,9 +3993,12 @@ export function App() {
             <div>
               <strong>{t("updateAvailable")}</strong>
               <span>
-                {t("updateAvailableBody", {
-                  version: visibleDesktopUpdate.latestVersion ?? ""
-                })}
+                {t(
+                  visibleDesktopUpdate.downloadedPath
+                    ? "updateAvailableBody"
+                    : "updateAvailableBodyRemote",
+                  { version: visibleDesktopUpdate.latestVersion ?? "" }
+                )}
               </span>
             </div>
             <div className="updateNoticeActions">
@@ -3902,7 +4008,11 @@ export function App() {
                 onClick={() => void openDesktopUpdateDownload(visibleDesktopUpdate)}
               >
                 <Download size={14} />
-                <span>{t("downloadUpdate")}</span>
+                <span>
+                  {visibleDesktopUpdate.downloadedPath
+                    ? t("downloadUpdate")
+                    : t("openRelease")}
+                </span>
               </button>
               <button
                 aria-label={t("dismissUpdate")}

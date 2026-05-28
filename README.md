@@ -33,7 +33,7 @@ presence, message composer, file mentions, and skill mentions.
 ## What This Project Does
 
 - Provides a desktop Electron app for local Codex sessions.
-- Provides a mobile Capacitor Android app for remote control.
+- Provides a native Android app for remote control.
 - Bridges desktop and mobile through a Go WebSocket Relay.
 - Keeps users isolated by Relay API key.
 - Lists desktop devices from an API key so the mobile app does not require manual
@@ -52,7 +52,7 @@ presence, message composer, file mentions, and skill mentions.
 .
 ├── apps/
 │   ├── desktop/              # React + Vite + Electron desktop app
-│   └── mobile/               # React + Vite + Capacitor Android app
+│   └── mobile/               # Native Android mobile app
 ├── packages/
 │   └── codex-adapter/        # Adapter around `codex app-server`
 ├── services/
@@ -77,14 +77,14 @@ Codex+ is split into five main parts:
 - Relay service: Go server that authenticates devices by API key, forwards
   desktop/mobile commands, tracks presence, stores durable events in SQLite, and
   exposes a small admin UI.
-- Mobile app: React + Capacitor client for Android. It connects to Relay, selects
+- Mobile app: native Android client. It connects to Relay, selects
   a desktop device from the account, mirrors session state, and sends remote
   commands.
 
 ```text
 ┌──────────────────────────┐
 │        Android App        │
-│ React + Capacitor         │
+│ Kotlin + Compose          │
 │ sessions, chat, approvals │
 └─────────────┬────────────┘
               │ wss + API key
@@ -215,15 +215,6 @@ Manifest example:
 }
 ```
 
-Start the mobile web app for browser testing:
-
-```bash
-npm run dev:mobile
-```
-
-The mobile dev server listens on `0.0.0.0`, so another device on the same LAN can
-open it with the workstation IP address.
-
 ## Configure Relay
 
 Desktop and mobile must use the same Relay endpoint and API key.
@@ -248,11 +239,10 @@ device ID.
 
 ## Android Build And Install
 
-Build and sync the Android project:
+Build the Android project:
 
 ```bash
 npm run build -w @codep/mobile
-npm run cap:sync -w @codep/mobile
 ```
 
 Open the project in Android Studio:
@@ -273,8 +263,7 @@ Install to a specific Android device:
 npm run install:mobile:android -- --target <adb-device-id>
 ```
 
-The install script builds the mobile app, syncs Capacitor, builds the debug APK,
-installs it with `adb`, and launches the app.
+The install script builds the debug APK, installs it with `adb`, and launches the app.
 
 If Gradle cannot find the Android SDK, create
 `apps/mobile/android/local.properties`:
@@ -333,7 +322,7 @@ npm run build
 npm run probe:adapter -- --turn "Say hello briefly."
 npm run dev:relay
 npm run dev:desktop
-npm run dev:mobile
+npm run dev:mobile:android
 npm run install:mobile:android
 npm run deploy:relay
 ```

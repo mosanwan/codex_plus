@@ -11,7 +11,7 @@ import {
 } from "electron";
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, open as openFile, readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { access, open as openFile, readdir, readFile, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -170,6 +170,8 @@ interface DesktopUpdateInfo {
   latestVersion: string | null;
   updateAvailable: boolean;
   downloadUrl?: string;
+  downloadedPath?: string;
+  releaseUrl?: string;
   releaseNotes?: string;
   checkedAt: number;
 }
@@ -178,15 +180,20 @@ interface UpdateManifest {
   version?: unknown;
   latestVersion?: unknown;
   tagName?: unknown;
+  tag_name?: unknown;
+  html_url?: unknown;
+  body?: unknown;
   releaseNotes?: unknown;
   notes?: unknown;
   downloadUrl?: unknown;
   downloads?: unknown;
+  assets?: unknown;
 }
 
-const DEFAULT_UPDATE_MANIFEST_URL =
-  "https://codex-bridge.three.ink/codex-plus/desktop/latest.json";
+const DEFAULT_GITHUB_RELEASE_API_URL =
+  "https://api.github.com/repos/mosanwan/codex_plus/releases/latest";
 const UPDATE_CHECK_TIMEOUT_MS = 8000;
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 120000;
 
 function createWindow(): void {
   const primaryWorkArea = screen.getPrimaryDisplay().workArea;
@@ -591,6 +598,18 @@ function registerIpcHandlers(): void {
     }
     await shell.openExternal(url);
   });
+  ipcMain.handle("app:update:reveal-download", async (_event, filePath: string) => {
+    if (!filePath || !path.isAbsolute(filePath)) {
+      throw new Error("Invalid update file path.");
+    }
+    const updateDirectory = desktopUpdateDirectory();
+    const relative = path.relative(updateDirectory, filePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("Update file path is outside the update directory.");
+    }
+    await access(filePath, fsConstants.R_OK);
+    shell.showItemInFolder(filePath);
+  });
   ipcMain.handle(
     "attachment:remote",
     async (_event, attachments: RemoteAttachmentInput[]) =>
@@ -876,6 +895,7 @@ async function checkForDesktopUpdate(): Promise<DesktopUpdateInfo> {
     stringOrUndefined(manifest.latestVersion) ??
     stringOrUndefined(manifest.version) ??
     stringOrUndefined(manifest.tagName) ??
+    stringOrUndefined(manifest.tag_name) ??
     null;
 
   if (!latestVersion) {
@@ -888,13 +908,23 @@ async function checkForDesktopUpdate(): Promise<DesktopUpdateInfo> {
   }
 
   const downloadUrl = selectDownloadUrl(manifest);
+  const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
+  const downloadedPath =
+    updateAvailable && downloadUrl
+      ? await downloadDesktopUpdate(downloadUrl, latestVersion).catch(() => undefined)
+      : undefined;
+
   return {
     currentVersion,
     latestVersion,
-    updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+    updateAvailable,
     downloadUrl,
+    downloadedPath,
+    releaseUrl: stringOrUndefined(manifest.html_url),
     releaseNotes:
-      stringOrUndefined(manifest.releaseNotes) ?? stringOrUndefined(manifest.notes),
+      stringOrUndefined(manifest.releaseNotes) ??
+      stringOrUndefined(manifest.notes) ??
+      stringOrUndefined(manifest.body),
     checkedAt
   };
 }
@@ -904,8 +934,22 @@ function updateManifestUrl(): string | null {
     return null;
   }
 
-  const configured = process.env.CODEX_PLUS_UPDATE_MANIFEST_URL?.trim();
-  return configured || DEFAULT_UPDATE_MANIFEST_URL;
+  const configuredManifest = process.env.CODEX_PLUS_UPDATE_MANIFEST_URL?.trim();
+  if (configuredManifest) {
+    return configuredManifest;
+  }
+
+  const configuredReleaseUrl = process.env.CODEX_PLUS_UPDATE_RELEASE_URL?.trim();
+  if (configuredReleaseUrl) {
+    return configuredReleaseUrl;
+  }
+
+  const configuredRepository = process.env.CODEX_PLUS_UPDATE_GITHUB_REPO?.trim();
+  if (configuredRepository) {
+    return `https://api.github.com/repos/${configuredRepository}/releases/latest`;
+  }
+
+  return DEFAULT_GITHUB_RELEASE_API_URL;
 }
 
 async function fetchUpdateManifest(url: string): Promise<UpdateManifest> {
@@ -918,6 +962,7 @@ async function fetchUpdateManifest(url: string): Promise<UpdateManifest> {
   try {
     const response = await fetch(url, {
       cache: "no-store",
+      headers: updateRequestHeaders(url),
       signal: controller.signal
     });
     if (!response.ok) {
@@ -960,7 +1005,149 @@ function selectDownloadUrl(manifest: UpdateManifest): string | undefined {
     }
   }
 
+  const assetUrl = selectGitHubAssetDownloadUrl(manifest.assets);
+  if (assetUrl) {
+    return assetUrl;
+  }
+
   return undefined;
+}
+
+function selectGitHubAssetDownloadUrl(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidates = value
+    .map(item => {
+      const record = asRecord(item);
+      const name = stringOrUndefined(record.name) ?? "";
+      const url = stringOrUndefined(record.browser_download_url);
+      return { name, url, score: updateAssetScore(name) };
+    })
+    .filter(item => item.url && isHttpUrl(item.url) && item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  return candidates[0]?.url;
+}
+
+function updateAssetScore(name: string): number {
+  const normalizedName = name.toLowerCase().replaceAll("-", "_");
+  let score = 0;
+  for (const key of updateDownloadKeys()) {
+    const normalizedKey = key.toLowerCase().replaceAll("-", "_");
+    if (normalizedName.includes(normalizedKey)) {
+      score = Math.max(score, 50 + normalizedKey.length);
+    }
+  }
+
+  if (process.platform === "darwin") {
+    if (normalizedName.endsWith(".dmg")) {
+      score += 25;
+    } else if (normalizedName.endsWith(".app.zip")) {
+      score += 18;
+    }
+  } else if (process.platform === "win32") {
+    if (normalizedName.endsWith(".exe")) {
+      score += 25;
+    } else if (normalizedName.endsWith(".zip")) {
+      score += 18;
+    }
+  } else if (process.platform === "linux") {
+    if (normalizedName.endsWith(".deb")) {
+      score += 25;
+    } else if (normalizedName.endsWith(".appimage")) {
+      score += 18;
+    }
+  }
+
+  if (normalizedName.includes("codex_plus")) {
+    score += 4;
+  }
+
+  return score;
+}
+
+async function downloadDesktopUpdate(
+  downloadUrl: string,
+  latestVersion: string
+): Promise<string> {
+  if (!isHttpUrl(downloadUrl)) {
+    throw new Error("Invalid update download URL.");
+  }
+
+  const destinationDirectory = path.join(
+    desktopUpdateDirectory(),
+    latestVersion.trim().replace(/^v/i, "") || "latest"
+  );
+  await mkdir(destinationDirectory, { recursive: true });
+  const destinationPath = path.join(
+    destinationDirectory,
+    updateAssetFileName(downloadUrl, latestVersion)
+  );
+
+  const existing = await stat(destinationPath).catch(() => null);
+  if (existing?.isFile() && existing.size > 0) {
+    return destinationPath;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(downloadUrl, {
+      cache: "no-store",
+      headers: updateRequestHeaders(downloadUrl),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`Update download failed with HTTP ${response.status}.`);
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0) {
+      throw new Error("Downloaded update file is empty.");
+    }
+    const temporaryPath = `${destinationPath}.download`;
+    await writeFile(temporaryPath, bytes);
+    await rename(temporaryPath, destinationPath);
+    return destinationPath;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function desktopUpdateDirectory(): string {
+  return path.join(app.getPath("userData"), "updates");
+}
+
+function updateAssetFileName(downloadUrl: string, latestVersion: string): string {
+  const url = new URL(downloadUrl);
+  const urlName = decodeURIComponent(path.basename(url.pathname));
+  if (urlName && urlName !== "/" && !urlName.includes(path.sep)) {
+    return urlName;
+  }
+
+  const platform = process.platform === "darwin"
+    ? "macos"
+    : process.platform === "win32"
+      ? "windows"
+      : "linux";
+  const extension = process.platform === "darwin"
+    ? "dmg"
+    : process.platform === "win32"
+      ? "zip"
+      : "deb";
+  return `codex-plus_${latestVersion.replace(/^v/i, "")}_${platform}_${process.arch}.${extension}`;
+}
+
+function updateRequestHeaders(url: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "user-agent": `CodexPlus/${app.getVersion()}`
+  };
+  if (new URL(url).hostname === "api.github.com") {
+    headers.accept = "application/vnd.github+json";
+  }
+  return headers;
 }
 
 function updateDownloadKeys(): string[] {

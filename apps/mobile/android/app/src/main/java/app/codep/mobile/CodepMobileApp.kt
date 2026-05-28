@@ -1,5 +1,6 @@
 package app.codep.mobile
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,6 +15,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.ListAlt
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -98,6 +100,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -237,6 +240,10 @@ private data class AppStrings(
     val renameSession: String,
     val favorite: String,
     val unfavorite: String,
+    val versionMismatchTitle: String,
+    val versionMismatchBody: String,
+    val updateDownload: String,
+    val dismissUpdate: String,
 )
 
 private val EnglishStrings = AppStrings(
@@ -295,6 +302,10 @@ private val EnglishStrings = AppStrings(
     renameSession = "Rename session",
     favorite = "Favorite",
     unfavorite = "Unfavorite",
+    versionMismatchTitle = "Version mismatch",
+    versionMismatchBody = "Desktop is running {desktopVersion}. This Android app is {mobileVersion}. Update both apps to the same release.",
+    updateDownload = "Open download",
+    dismissUpdate = "Dismiss",
 )
 
 private val ChineseStrings = AppStrings(
@@ -353,6 +364,10 @@ private val ChineseStrings = AppStrings(
     renameSession = "重命名会话",
     favorite = "收藏",
     unfavorite = "取消收藏",
+    versionMismatchTitle = "版本不一致",
+    versionMismatchBody = "桌面端版本是 {desktopVersion}，当前安卓端版本是 {mobileVersion}。请把两端更新到同一个 Release。",
+    updateDownload = "打开下载",
+    dismissUpdate = "关闭提示",
 )
 
 private val LocalAppStrings = staticCompositionLocalOf { EnglishStrings }
@@ -401,6 +416,7 @@ private val PermissionOptions = listOf(
 @Composable
 fun CodepMobileApp(viewModel: MobileViewModel) {
     val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
     var runtimeSettingsOpen by remember { mutableStateOf(false) }
 
     CompositionLocalProvider(LocalAppStrings provides stringsFor(state.language)) {
@@ -460,7 +476,76 @@ fun CodepMobileApp(viewModel: MobileViewModel) {
                 onClose = viewModel::closeFilePreview
             )
         }
+        if (state.shouldShowVersionMismatch) {
+            VersionMismatchDialog(
+                desktopVersion = state.desktopAppVersion,
+                mobileVersion = BuildConfig.VERSION_NAME,
+                onDismiss = viewModel::dismissVersionMismatch,
+                onOpenDownload = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse(state.updateDownloadUrl)
+                            )
+                        )
+                    }
+                    viewModel.dismissVersionMismatch()
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun VersionMismatchDialog(
+    desktopVersion: String,
+    mobileVersion: String,
+    onDismiss: () -> Unit,
+    onOpenDownload: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = S.versionMismatchTitle,
+                color = Ink,
+                fontWeight = FontWeight.Medium
+            )
+        },
+        text = {
+            Text(
+                text = S.versionMismatchBody
+                    .replace("{desktopVersion}", desktopVersion)
+                    .replace("{mobileVersion}", mobileVersion),
+                color = Body,
+                lineHeight = 20.sp
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onOpenDownload,
+                colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Canvas),
+                shape = RadiusSmall
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(S.updateDownload)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(S.dismissUpdate, color = Ink)
+            }
+        },
+        containerColor = Canvas,
+        titleContentColor = Ink,
+        textContentColor = Body
+    )
 }
 
 @Composable

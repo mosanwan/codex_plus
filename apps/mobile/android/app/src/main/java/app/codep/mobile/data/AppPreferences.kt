@@ -43,7 +43,8 @@ data class AppSettings(
     val backgroundLastEventId: Long = 0,
     val notificationsEnabled: Boolean = true,
     val themeMode: AppThemeMode = AppThemeMode.Dark,
-    val language: AppLanguage = AppLanguage.English
+    val language: AppLanguage = AppLanguage.English,
+    val dismissedVersionMismatch: String = ""
 )
 
 class AppPreferences(private val context: Context) {
@@ -57,6 +58,7 @@ class AppPreferences(private val context: Context) {
         val notificationsEnabled = booleanPreferencesKey("notifications_enabled")
         val themeMode = stringPreferencesKey("theme_mode")
         val language = stringPreferencesKey("language")
+        val dismissedVersionMismatch = stringPreferencesKey("dismissed_version_mismatch")
     }
 
     suspend fun read(): AppSettings {
@@ -84,7 +86,8 @@ class AppPreferences(private val context: Context) {
             backgroundLastEventId = prefs[Keys.backgroundLastEventId] ?: (prefs[Keys.lastEventId] ?: 0L),
             notificationsEnabled = prefs[Keys.notificationsEnabled] ?: true,
             themeMode = AppThemeMode.fromStorage(prefs[Keys.themeMode]),
-            language = AppLanguage.fromStorage(prefs[Keys.language])
+            language = AppLanguage.fromStorage(prefs[Keys.language]),
+            dismissedVersionMismatch = prefs[Keys.dismissedVersionMismatch].orEmpty()
         )
     }
 
@@ -118,6 +121,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun saveLanguage(value: AppLanguage) {
         context.codepDataStore.edit { it[Keys.language] = value.storageValue }
+    }
+
+    suspend fun saveDismissedVersionMismatch(value: String) {
+        context.codepDataStore.edit { it[Keys.dismissedVersionMismatch] = value }
     }
 }
 

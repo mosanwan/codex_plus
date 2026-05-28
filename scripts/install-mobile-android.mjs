@@ -79,8 +79,6 @@ if (!target) {
 
 console.log(`Installing mobile app to Android device ${target}`);
 run("npm", ["run", "build", "--workspace", "@codep/mobile"]);
-run("npm", ["run", "cap:sync", "--workspace", "@codep/mobile"]);
-run("./gradlew", [":app:assembleDebug"], resolve(repoRoot, "apps/mobile/android"));
 run("adb", [
   "-s",
   target,

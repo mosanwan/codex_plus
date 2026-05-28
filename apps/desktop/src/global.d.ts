@@ -64,6 +64,8 @@ export interface DesktopUpdateInfo {
   latestVersion: string | null;
   updateAvailable: boolean;
   downloadUrl?: string;
+  downloadedPath?: string;
+  releaseUrl?: string;
   releaseNotes?: string;
   checkedAt: number;
 }
@@ -133,6 +135,7 @@ declare global {
       chooseNotificationSoundFile(): Promise<NotificationSoundFile | null>;
       checkForUpdates(): Promise<DesktopUpdateInfo>;
       openUpdateDownload(url: string): Promise<void>;
+      revealDownloadedUpdate(path: string): Promise<void>;
       searchWorkspaceFiles(options: {
         cwd: string;
         query?: string;

@@ -62,6 +62,8 @@ interface DesktopUpdateInfo {
   latestVersion: string | null;
   updateAvailable: boolean;
   downloadUrl?: string;
+  downloadedPath?: string;
+  releaseUrl?: string;
   releaseNotes?: string;
   checkedAt: number;
 }
@@ -73,6 +75,7 @@ contextBridge.exposeInMainWorld("codexApp", {
   chooseNotificationSoundFile: () => ipcRenderer.invoke("notification:sound:choose"),
   checkForUpdates: (): Promise<DesktopUpdateInfo> => ipcRenderer.invoke("app:update:check"),
   openUpdateDownload: (url: string) => ipcRenderer.invoke("app:update:open-download", url),
+  revealDownloadedUpdate: (path: string) => ipcRenderer.invoke("app:update:reveal-download", path),
   searchWorkspaceFiles: (options: { cwd: string; query?: string; limit?: number }) =>
     ipcRenderer.invoke("composer:files:search", options),
   previewWorkspaceFile: (options: { cwd: string; path: string; maxBytes?: number }) =>
