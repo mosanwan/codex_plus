@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld("codexApp", {
   openUpdateDownload: (url: string) => ipcRenderer.invoke("app:update:open-download", url),
   searchWorkspaceFiles: (options: { cwd: string; query?: string; limit?: number }) =>
     ipcRenderer.invoke("composer:files:search", options),
+  previewWorkspaceFile: (options: { cwd: string; path: string; maxBytes?: number }) =>
+    ipcRenderer.invoke("workspace:file:preview", options),
   searchSkills: (options?: { cwd?: string; query?: string; limit?: number; forceReload?: boolean }) =>
     ipcRenderer.invoke("composer:skills:search", options ?? {}),
   saveRemoteAttachments: (attachments: RemoteAttachmentInput[]) =>

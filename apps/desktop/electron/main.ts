@@ -11,7 +11,7 @@ import {
 } from "electron";
 import { execFile } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
+import { access, open as openFile, readdir, readFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -148,6 +148,15 @@ interface ComposerSuggestion {
   detail?: string;
   insertText: string;
   path?: string;
+}
+
+interface WorkspaceFilePreview {
+  path: string;
+  relativePath: string;
+  name: string;
+  content: string;
+  size: number;
+  truncated: boolean;
 }
 
 interface NotificationSoundFile {
@@ -591,6 +600,11 @@ function registerIpcHandlers(): void {
     "composer:files:search",
     async (_event, options: { cwd: string; query?: string; limit?: number }) =>
       searchWorkspaceFiles(options)
+  );
+  ipcMain.handle(
+    "workspace:file:preview",
+    async (_event, options: { cwd: string; path: string; maxBytes?: number }) =>
+      previewWorkspaceFile(options)
   );
   ipcMain.handle(
     "composer:skills:search",
@@ -1764,6 +1778,63 @@ async function searchWorkspaceFiles(options: {
     .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
     .slice(0, limit)
     .map(({ score: _score, ...item }) => item);
+}
+
+async function previewWorkspaceFile(options: {
+  cwd: string;
+  path: string;
+  maxBytes?: number;
+}): Promise<WorkspaceFilePreview> {
+  const cwd = path.resolve(options.cwd);
+  const requestedPath = String(options.path ?? "").trim();
+  if (!requestedPath) {
+    throw new Error("Missing file path.");
+  }
+
+  const targetPath = path.isAbsolute(requestedPath)
+    ? path.resolve(requestedPath)
+    : path.resolve(cwd, requestedPath);
+  const relativePath = path.relative(cwd, targetPath);
+  if (
+    relativePath === "" ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error("File preview is limited to the selected workspace.");
+  }
+
+  const fileStat = await stat(targetPath);
+  if (!fileStat.isFile()) {
+    throw new Error("Only regular files can be previewed.");
+  }
+
+  const maxBytes = Math.min(
+    Math.max(Number(options.maxBytes) || 120000, 4096),
+    240000
+  );
+  const bytesToRead = Math.min(fileStat.size, maxBytes);
+  const buffer = Buffer.alloc(bytesToRead);
+  const file = await openFile(targetPath, "r");
+  let bytesRead = 0;
+  try {
+    const result = await file.read(buffer, 0, bytesToRead, 0);
+    bytesRead = result.bytesRead;
+  } finally {
+    await file.close();
+  }
+
+  if (buffer.subarray(0, bytesRead).includes(0)) {
+    throw new Error("Binary files cannot be previewed.");
+  }
+
+  return {
+    path: targetPath,
+    relativePath: toPosixPath(relativePath),
+    name: path.basename(targetPath),
+    content: buffer.subarray(0, bytesRead).toString("utf8"),
+    size: fileStat.size,
+    truncated: fileStat.size > bytesRead
+  };
 }
 
 async function searchCodexSkills(options: {

@@ -64,6 +64,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode, RefObject } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import mobilePackage from "../package.json";
 import {
   mockSnapshot,
   type Approval,
@@ -99,6 +100,7 @@ const FAVORITE_SESSIONS_STORAGE_KEY = "codep.mobileFavoriteSessions";
 const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.mobileCollapsedWorkspaces";
 const THEME_STORAGE_KEY = "codep.theme";
 const LANGUAGE_STORAGE_KEY = "codep.language";
+const MOBILE_APP_VERSION = mobilePackage.version;
 const INITIAL_VISIBLE_MESSAGE_COUNT = 40;
 const MESSAGE_PAGE_SIZE = 40;
 const PERMISSION_OPTIONS: Array<{
@@ -223,6 +225,11 @@ const UI_TEXT = {
     noMatchingSkills: "No matching skills",
     messageCodex: "Message Codex",
     composerPlaceholder: "Message Codex on your desktop",
+    previewFile: "Preview file",
+    closeFilePreview: "Close file preview",
+    filePreviewLoading: "Loading preview...",
+    filePreviewError: "Could not preview this file.",
+    filePreviewTruncated: "Preview truncated",
     runtimeSettings: "Runtime settings",
     runtimeSettingsTitle: "Runtime settings",
     closeRuntimeSettings: "Close runtime settings",
@@ -273,6 +280,7 @@ const UI_TEXT = {
       "When a Codex turn completes, Android can show a system notification with a short session summary while the app is running in the background.",
     notConfigured: "Not configured",
     developer: "Developer",
+    appVersion: "Version",
     androidShell: "Android shell",
     dataSource: "Data source",
     relaySnapshot: "Relay snapshot",
@@ -359,6 +367,11 @@ const UI_TEXT = {
     noMatchingSkills: "没有匹配的技能",
     messageCodex: "给 Codex 发消息",
     composerPlaceholder: "在桌面端向 Codex 发消息",
+    previewFile: "预览文件",
+    closeFilePreview: "关闭文件预览",
+    filePreviewLoading: "正在加载预览...",
+    filePreviewError: "无法预览这个文件。",
+    filePreviewTruncated: "预览已截断",
     runtimeSettings: "运行设置",
     runtimeSettingsTitle: "运行设置",
     closeRuntimeSettings: "关闭运行设置",
@@ -409,6 +422,7 @@ const UI_TEXT = {
       "Codex Turn 完成时，Android 可以发出系统通知，并附上简要的 Session 说明；App 在后台运行时也会提示。",
     notConfigured: "未配置",
     developer: "开发",
+    appVersion: "版本",
     androidShell: "Android 壳",
     dataSource: "数据源",
     relaySnapshot: "Relay 快照",
@@ -587,6 +601,25 @@ interface ComposerCompletion {
   requestId: string;
 }
 
+interface WorkspaceFilePreview {
+  path: string;
+  relativePath: string;
+  name: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+
+interface FilePreviewDialogState {
+  requestId: string;
+  path: string;
+  label: string;
+  workspace: string;
+  loading: boolean;
+  preview?: WorkspaceFilePreview;
+  error?: string;
+}
+
 interface TurnCompleteNotificationSettings {
   enabled: boolean;
   sound: boolean;
@@ -640,6 +673,8 @@ export function App() {
   const [isWorking, setIsWorking] = useState(false);
   const [isSessionLoading, setIsSessionLoading] = useState(false);
   const [isRuntimeSettingsOpen, setIsRuntimeSettingsOpen] = useState(false);
+  const [filePreviewDialog, setFilePreviewDialog] =
+    useState<FilePreviewDialogState | null>(null);
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [visibleMessageCount, setVisibleMessageCount] = useState(
     INITIAL_VISIBLE_MESSAGE_COUNT
@@ -1558,6 +1593,28 @@ export function App() {
     }
   }
 
+  function requestFilePreview(path: string, label: string) {
+    const requestedPath = normalizePreviewPath(path);
+    const workspace = activeWorkspace ?? device.workspace;
+    if (!requestedPath || !workspace) {
+      return;
+    }
+    const requestId = uniqueId();
+    setFilePreviewDialog({
+      requestId,
+      path: requestedPath,
+      label: label.trim() || fileNameFromPath(requestedPath),
+      workspace,
+      loading: true
+    });
+    publishReliableRelayCommand("client.preview_file", {
+      requestId,
+      workspace,
+      path: requestedPath,
+      maxBytes: 120000
+    });
+  }
+
   function applyRelayMessage(data: unknown) {
     const envelope = parseRelayEnvelope(data);
     if (!envelope) {
@@ -1632,6 +1689,11 @@ export function App() {
       return;
     }
 
+    if (envelope.type === "desktop.file_preview") {
+      applyFilePreviewPayload(envelope.payload);
+      return;
+    }
+
     if (envelope.type === "desktop.progress") {
       applyDesktopProgress(envelope.payload);
       return;
@@ -1665,6 +1727,27 @@ export function App() {
     if (typeof record.isWorking === "boolean") {
       setIsWorking(record.isWorking);
     }
+  }
+
+  function applyFilePreviewPayload(payload: unknown) {
+    const record = asRecord(payload);
+    const requestId = typeof record.requestId === "string" ? record.requestId : "";
+    if (!requestId) {
+      return;
+    }
+    const preview = workspaceFilePreviewFromPayload(record.preview);
+    const error = typeof record.error === "string" ? record.error : "";
+    setFilePreviewDialog(current => {
+      if (!current || current.requestId !== requestId) {
+        return current;
+      }
+      return {
+        ...current,
+        loading: false,
+        preview: preview ?? undefined,
+        error: error || (preview ? undefined : t("filePreviewError"))
+      };
+    });
   }
 
   function applyDesktopEvent(payload: unknown) {
@@ -1917,6 +2000,13 @@ export function App() {
           t={t}
         />
       ) : null}
+      {filePreviewDialog ? (
+        <FilePreviewModal
+          dialog={filePreviewDialog}
+          onClose={() => setFilePreviewDialog(null)}
+          t={t}
+        />
+      ) : null}
 
       <section className="pageViewport" aria-live="polite">
         {activeView === "sessions" ? (
@@ -1994,6 +2084,7 @@ export function App() {
               onLoadOlderMessages={loadOlderMessages}
               onMoveComposerCompletionSelection={moveComposerCompletionSelection}
               onOpenComposerCompletion={openComposerCompletion}
+              onPreviewFile={requestFilePreview}
               onResolveApproval={resolveApproval}
               onRemoveAttachment={removePendingAttachment}
               onSelectComposerCompletion={selectComposerCompletion}
@@ -2584,6 +2675,7 @@ function ChatPage({
   onLoadOlderMessages,
   onMoveComposerCompletionSelection,
   onOpenComposerCompletion,
+  onPreviewFile,
   onRemoveAttachment,
   onResolveApproval,
   onSelectComposerCompletion,
@@ -2610,6 +2702,7 @@ function ChatPage({
   onLoadOlderMessages: () => void;
   onMoveComposerCompletionSelection: (direction: 1 | -1) => void;
   onOpenComposerCompletion: (mode: ComposerCompletionMode, cursor: number) => void;
+  onPreviewFile: (path: string, label: string) => void;
   onRemoveAttachment: (id: string) => void;
   onResolveApproval: (approvalId: string, decision: "accept" | "decline") => void;
   onSelectComposerCompletion: (item: ComposerSuggestion) => void;
@@ -2691,7 +2784,7 @@ function ChatPage({
           <article className="messageItem" data-role={message.role} key={message.id}>
             <div className="messageBubble">
               {message.meta ? <small>{message.meta}</small> : null}
-              <MarkdownContent text={message.text} />
+              <MarkdownContent onPreviewFile={onPreviewFile} text={message.text} />
               {message.attachments && message.attachments.length > 0 ? (
                 <ImageAttachmentGrid attachments={message.attachments} t={t} />
               ) : null}
@@ -2980,30 +3073,115 @@ function ImageAttachmentGrid({
   );
 }
 
-function MarkdownContent({ text }: { text: string }) {
+function FilePreviewModal({
+  dialog,
+  onClose,
+  t
+}: {
+  dialog: FilePreviewDialogState;
+  onClose: () => void;
+  t: (key: UIMessageKey, values?: Record<string, string | number>) => string;
+}) {
+  const title = dialog.preview?.relativePath || dialog.label || fileNameFromPath(dialog.path);
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <section
+        aria-labelledby="file-preview-title"
+        className="filePreviewModal"
+        role="dialog"
+        aria-modal="true"
+      >
+        <header className="filePreviewHeader">
+          <div>
+            <span>{t("previewFile")}</span>
+            <h2 id="file-preview-title">{title}</h2>
+          </div>
+          <button
+            aria-label={t("closeFilePreview")}
+            className="headerSettingsButton"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <div className="filePreviewMeta">
+          <span>{dialog.preview ? formatBytes(dialog.preview.size) : dialog.workspace}</span>
+          {dialog.preview?.truncated ? <span>{t("filePreviewTruncated")}</span> : null}
+        </div>
+        {dialog.loading ? (
+          <div className="filePreviewStatus">{t("filePreviewLoading")}</div>
+        ) : dialog.error ? (
+          <div className="filePreviewStatus" role="alert">
+            {dialog.error}
+          </div>
+        ) : (
+          <pre className="filePreviewContent">
+            <code>{dialog.preview?.content ?? ""}</code>
+          </pre>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function MarkdownContent({
+  onPreviewFile,
+  text
+}: {
+  onPreviewFile: (path: string, label: string) => void;
+  text: string;
+}) {
+  const components = useMemo(
+    () => markdownComponents(onPreviewFile),
+    [onPreviewFile]
+  );
   return (
     <div className="markdownContent">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>
     </div>
   );
 }
 
-const markdownComponents: Components = {
-  code(props) {
-    const { children, className, ...rest } = props;
-    const text = String(children ?? "");
-    if (className?.includes("language-diff")) {
-      return <code {...rest}>{renderDiffLines(text)}</code>;
+function markdownComponents(onPreviewFile: (path: string, label: string) => void): Components {
+  return {
+    a(props) {
+      const { children, href, ...rest } = props;
+      const previewPath = previewPathFromHref(href);
+      if (previewPath) {
+        const label = childrenToText(children) || fileNameFromPath(previewPath);
+        return (
+          <button
+            className="filePreviewLink"
+            type="button"
+            onClick={() => onPreviewFile(previewPath, label)}
+          >
+            {children}
+          </button>
+        );
+      }
+      return (
+        <a href={href} rel="noreferrer" target="_blank" {...rest}>
+          {children}
+        </a>
+      );
+    },
+    code(props) {
+      const { children, className, ...rest } = props;
+      const text = String(children ?? "");
+      if (className?.includes("language-diff")) {
+        return <code {...rest}>{renderDiffLines(text)}</code>;
+      }
+      return (
+        <code className={className} {...rest}>
+          {children}
+        </code>
+      );
     }
-    return (
-      <code className={className} {...rest}>
-        {children}
-      </code>
-    );
-  }
-};
+  };
+}
 
 function renderDiffLines(text: string): ReactNode[] {
   return text.split("\n").map((line, index) => (
@@ -3478,6 +3656,11 @@ function SettingsPage({
 
       <section className="sectionBlock">
         <h2>{t("developer")}</h2>
+        <SettingsRow
+          icon={<Code2 size={18} />}
+          label={t("appVersion")}
+          value={MOBILE_APP_VERSION}
+        />
         <SettingsRow
           icon={<Code2 size={18} />}
           label={t("androidShell")}
@@ -4150,7 +4333,10 @@ function isHiddenChatMessage(message: Message): boolean {
   }
   const meta = message.meta?.trim().toLowerCase() ?? "";
   const text = message.text.trim().toLowerCase().replace(/\.$/, "");
-  return meta === "turn" && (text === "turn started" || text === "turn completed");
+  return (
+    meta === "raw.notification" ||
+    (meta === "turn" && (text === "turn started" || text === "turn completed"))
+  );
 }
 
 function visibleDesktopStatus(status: string): string {
@@ -4655,4 +4841,84 @@ function firstText(...values: unknown[]): string {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function workspaceFilePreviewFromPayload(value: unknown): WorkspaceFilePreview | null {
+  const record = asRecord(value);
+  const path = firstText(record.path);
+  const relativePath = firstText(record.relativePath);
+  const name = firstText(record.name);
+  const content = typeof record.content === "string" ? record.content : "";
+  const size = numberFromUnknown(record.size);
+  if (!path || !relativePath || !name) {
+    return null;
+  }
+  return {
+    path,
+    relativePath,
+    name,
+    content,
+    size,
+    truncated: record.truncated === true
+  };
+}
+
+function previewPathFromHref(href: string | undefined): string {
+  if (!href) {
+    return "";
+  }
+  const trimmed = href.trim();
+  if (/^file:\/\//i.test(trimmed)) {
+    try {
+      return normalizePreviewPath(new URL(trimmed).pathname);
+    } catch {
+      return "";
+    }
+  }
+  if (
+    !trimmed ||
+    trimmed.startsWith("#") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+  ) {
+    return "";
+  }
+  return normalizePreviewPath(trimmed);
+}
+
+function normalizePreviewPath(value: string): string {
+  const withoutHash = value.split("#", 1)[0] ?? "";
+  const withoutQuery = withoutHash.split("?", 1)[0] ?? "";
+  try {
+    return decodeURIComponent(withoutQuery).trim();
+  } catch {
+    return withoutQuery.trim();
+  }
+}
+
+function fileNameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized.split("/").pop() || path;
+}
+
+function childrenToText(children: ReactNode): string {
+  if (typeof children === "string" || typeof children === "number") {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map(childrenToText).join("");
+  }
+  return "";
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) {
+    return "";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }

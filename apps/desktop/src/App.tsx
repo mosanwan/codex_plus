@@ -205,6 +205,8 @@ interface RemoteCommandEnvelope {
     mode?: "file" | "skill";
     query?: string;
     limit?: number;
+    path?: string;
+    maxBytes?: number;
   };
 }
 
@@ -2874,6 +2876,37 @@ export function App() {
         type: "desktop.composer_suggestions",
         payload: { requestId, mode, query, items }
       });
+      return;
+    }
+
+    if (envelope.type === "client.preview_file") {
+      const requestId = envelope.payload?.requestId;
+      const requestedPath = envelope.payload?.path;
+      const cwd = envelope.payload?.workspace || activeWorkspaceRef.current;
+      if (!requestId || !requestedPath || !cwd) {
+        return;
+      }
+      try {
+        const preview = await desktopApi.previewWorkspaceFile({
+          cwd,
+          path: requestedPath,
+          maxBytes: envelope.payload?.maxBytes
+        });
+        publishRelay({
+          type: "desktop.file_preview",
+          payload: { requestId, workspace: cwd, preview }
+        });
+      } catch (error) {
+        publishRelay({
+          type: "desktop.file_preview",
+          payload: {
+            requestId,
+            workspace: cwd,
+            path: requestedPath,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
       return;
     }
 

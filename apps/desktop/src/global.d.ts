@@ -44,6 +44,15 @@ export interface ComposerSuggestion {
   path?: string;
 }
 
+export interface WorkspaceFilePreview {
+  path: string;
+  relativePath: string;
+  name: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+
 export interface NotificationSoundFile {
   path: string;
   url: string;
@@ -129,6 +138,11 @@ declare global {
         query?: string;
         limit?: number;
       }): Promise<ComposerSuggestion[]>;
+      previewWorkspaceFile(options: {
+        cwd: string;
+        path: string;
+        maxBytes?: number;
+      }): Promise<WorkspaceFilePreview>;
       searchSkills(options?: {
         cwd?: string;
         query?: string;

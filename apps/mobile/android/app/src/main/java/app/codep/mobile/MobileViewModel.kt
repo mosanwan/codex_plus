@@ -55,7 +55,10 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.net.URI
+import java.net.URLDecoder
 import java.util.UUID
 import kotlin.math.min
 
@@ -93,7 +96,8 @@ data class MobileUiState(
     val composer: String = "",
     val composerCompletion: ComposerCompletion? = null,
     val pendingAttachments: List<MessageAttachment> = emptyList(),
-    val workspacePathDraft: String = ""
+    val workspacePathDraft: String = "",
+    val filePreviewDialog: FilePreviewDialog? = null
 ) {
     val activeSession: Session?
         get() = workspaces.asSequence()
@@ -105,6 +109,25 @@ data class MobileUiState(
     val hasRelaySettings: Boolean
         get() = relayEndpoint.isNotBlank() && relayApiKey.isNotBlank() && desktopDeviceId.isNotBlank()
 }
+
+data class WorkspaceFilePreview(
+    val path: String,
+    val relativePath: String,
+    val name: String,
+    val content: String,
+    val size: Long,
+    val truncated: Boolean
+)
+
+data class FilePreviewDialog(
+    val requestId: String,
+    val path: String,
+    val label: String,
+    val workspace: String,
+    val loading: Boolean,
+    val preview: WorkspaceFilePreview? = null,
+    val error: String? = null
+)
 
 class MobileViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = AppPreferences(application)
@@ -465,6 +488,38 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
         publishReliable("client.interrupt")
     }
 
+    fun requestFilePreview(path: String, label: String) {
+        val requestedPath = normalizePreviewPath(path)
+        val current = _state.value
+        val workspace = current.activeWorkspace ?: current.device.workspace
+        if (requestedPath.isBlank() || workspace.isBlank()) return
+        val requestId = "preview-${UUID.randomUUID()}"
+        _state.update {
+            it.copy(
+                filePreviewDialog = FilePreviewDialog(
+                    requestId = requestId,
+                    path = requestedPath,
+                    label = label.ifBlank { requestedPath.substringAfterLast('/') },
+                    workspace = workspace,
+                    loading = true
+                )
+            )
+        }
+        publishReliable(
+            "client.preview_file",
+            buildJsonObject {
+                put("requestId", requestId)
+                put("workspace", workspace)
+                put("path", requestedPath)
+                put("maxBytes", 120_000)
+            }
+        )
+    }
+
+    fun closeFilePreview() {
+        _state.update { it.copy(filePreviewDialog = null) }
+    }
+
     fun openSession(sessionId: String) {
         openSession(sessionId = sessionId, workspaceOverride = null)
     }
@@ -760,6 +815,32 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
             "desktop.composer_suggestions" -> {
                 handleComposerSuggestions(envelope.payload)
             }
+
+            "desktop.file_preview" -> {
+                handleFilePreview(envelope.payload)
+            }
+        }
+    }
+
+    private fun handleFilePreview(payload: kotlinx.serialization.json.JsonElement?) {
+        val root = payload as? JsonObject ?: return
+        val requestId = (root["requestId"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        if (requestId.isBlank()) return
+        val preview = filePreviewFromPayload(root["preview"])
+        val error = (root["error"] as? JsonPrimitive)?.contentOrNull
+        _state.update { current ->
+            val dialog = current.filePreviewDialog
+            if (dialog == null || dialog.requestId != requestId) {
+                current
+            } else {
+                current.copy(
+                    filePreviewDialog = dialog.copy(
+                        loading = false,
+                        preview = preview,
+                        error = error ?: if (preview == null) "Could not preview this file." else null
+                    )
+                )
+            }
         }
     }
 
@@ -1028,6 +1109,32 @@ private data class PendingCommand(
     val payload: JsonObject,
     val createdAt: Long
 )
+
+private fun filePreviewFromPayload(value: kotlinx.serialization.json.JsonElement?): WorkspaceFilePreview? {
+    val root = value as? JsonObject ?: return null
+    val path = (root["path"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+    val relativePath = (root["relativePath"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+    val name = (root["name"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+    if (path.isBlank() || relativePath.isBlank() || name.isBlank()) return null
+    return WorkspaceFilePreview(
+        path = path,
+        relativePath = relativePath,
+        name = name,
+        content = (root["content"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        size = (root["size"] as? JsonPrimitive)?.longOrNull ?: 0L,
+        truncated = (root["truncated"] as? JsonPrimitive)?.contentOrNull == "true"
+    )
+}
+
+private fun normalizePreviewPath(value: String): String {
+    val trimmed = value.substringBefore('#').substringBefore('?').trim()
+    if (trimmed.startsWith("file://", ignoreCase = true)) {
+        return runCatching { URI(trimmed).path.orEmpty() }.getOrDefault("")
+    }
+    return runCatching { URLDecoder.decode(trimmed, Charsets.UTF_8.name()) }
+        .getOrDefault(trimmed)
+        .trim()
+}
 
 private fun defaultModelOptions(): List<ModelOption> {
     return listOf(

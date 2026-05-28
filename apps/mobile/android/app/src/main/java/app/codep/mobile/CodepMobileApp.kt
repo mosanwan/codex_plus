@@ -104,9 +104,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -452,6 +454,106 @@ fun CodepMobileApp(viewModel: MobileViewModel) {
                 onPermissionModeChange = viewModel::updatePermissionMode
             )
         }
+        state.filePreviewDialog?.let { dialog ->
+            FilePreviewDialogView(
+                dialog = dialog,
+                onClose = viewModel::closeFilePreview
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilePreviewDialogView(dialog: FilePreviewDialog, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .border(BorderStroke(1.dp, Hairline), Radius)
+                .background(Canvas, Radius)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = if (IsChinese) "预览文件" else "Preview file",
+                        color = Muted,
+                        fontSize = 12.sp,
+                        lineHeight = 15.sp
+                    )
+                    Text(
+                        text = dialog.preview?.relativePath ?: dialog.label,
+                        color = Ink,
+                        fontSize = 16.sp,
+                        lineHeight = 21.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = if (IsChinese) "关闭文件预览" else "Close file preview",
+                        tint = Body,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = dialog.preview?.size?.let(::formatBytes) ?: dialog.workspace,
+                    color = Muted,
+                    fontSize = 12.sp
+                )
+                if (dialog.preview?.truncated == true) {
+                    Text(
+                        text = if (IsChinese) "预览已截断" else "Preview truncated",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            when {
+                dialog.loading -> PreviewStatusText(if (IsChinese) "正在加载预览..." else "Loading preview...")
+                dialog.error != null -> PreviewStatusText(dialog.error)
+                else -> Text(
+                    text = dialog.preview?.content.orEmpty(),
+                    color = Body,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp, max = 500.dp)
+                        .border(BorderStroke(1.dp, Hairline), RadiusSmall)
+                        .background(SurfaceSoft, RadiusSmall)
+                        .verticalScroll(rememberScrollState())
+                        .horizontalScroll(rememberScrollState())
+                        .padding(10.dp),
+                    softWrap = false
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreviewStatusText(text: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 180.dp)
+            .border(BorderStroke(1.dp, Hairline), RadiusSmall)
+            .background(SurfaceSoft, RadiusSmall)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = text, color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
     }
 }
 
@@ -753,7 +855,10 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
                 }
             }
             items(visibleMessages, key = { it.id }) { message ->
-                MessageBubble(message = message)
+                MessageBubble(
+                    message = message,
+                    onPreviewFile = viewModel::requestFilePreview
+                )
             }
             if (state.diffLines.isNotEmpty()) {
                 item(key = "diff-preview") {
@@ -854,7 +959,7 @@ private fun ApprovalStrip(approvals: List<Approval>, viewModel: MobileViewModel)
 }
 
 @Composable
-private fun MessageBubble(message: Message) {
+private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> Unit) {
     val isUser = message.role == "user"
     val isEvent = message.role == "event"
     Row(
@@ -887,7 +992,8 @@ private fun MessageBubble(message: Message) {
             MarkdownContent(
                 text = message.text.ifBlank { "(attachment)" },
                 userMessage = isUser,
-                eventMessage = isEvent
+                eventMessage = isEvent,
+                onPreviewFile = onPreviewFile
             )
             if (message.attachments.isNotEmpty()) {
                 MessageAttachmentList(
@@ -915,30 +1021,37 @@ private fun MessageAttachmentList(attachments: List<MessageAttachment>, userMess
 }
 
 @Composable
-private fun MarkdownContent(text: String, userMessage: Boolean, eventMessage: Boolean) {
+private fun MarkdownContent(
+    text: String,
+    userMessage: Boolean,
+    eventMessage: Boolean,
+    onPreviewFile: (String, String) -> Unit
+) {
     val blocks = remember(text) { parseMarkdownBlocks(text) }
     val textColor = if (userMessage) Canvas else Body
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MarkdownBlock.Heading -> Text(
-                    text = inlineMarkdown(block.text, textColor),
-                    color = textColor,
-                    fontSize = when (block.level) {
-                        1 -> 17.sp
-                        2 -> 16.sp
-                        else -> 15.sp
-                    },
+                is MarkdownBlock.Heading -> InlineMarkdownText(
+                    text = block.text,
+                    textColor = textColor,
+                    fontSize = (when (block.level) {
+                        1 -> 17
+                        2 -> 16
+                        else -> 15
+                    }).sp,
                     lineHeight = 21.sp,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    onPreviewFile = onPreviewFile
                 )
 
-                is MarkdownBlock.Paragraph -> Text(
-                    text = inlineMarkdown(block.text, textColor),
-                    color = textColor,
+                is MarkdownBlock.Paragraph -> InlineMarkdownText(
+                    text = block.text,
+                    textColor = textColor,
                     fontSize = if (eventMessage) 12.sp else 14.sp,
                     lineHeight = if (eventMessage) 17.sp else 20.sp,
-                    fontFamily = if (eventMessage) FontFamily.Monospace else FontFamily.Default
+                    fontFamily = if (eventMessage) FontFamily.Monospace else FontFamily.Default,
+                    onPreviewFile = onPreviewFile
                 )
 
                 is MarkdownBlock.ListItems -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -951,20 +1064,25 @@ private fun MarkdownContent(text: String, userMessage: Boolean, eventMessage: Bo
                                 lineHeight = 20.sp,
                                 fontFamily = if (eventMessage) FontFamily.Monospace else FontFamily.Default
                             )
-                            Text(
-                                text = inlineMarkdown(item, textColor),
-                                color = textColor,
+                            InlineMarkdownText(
+                                text = item,
+                                textColor = textColor,
                                 fontSize = if (eventMessage) 12.sp else 14.sp,
                                 lineHeight = if (eventMessage) 17.sp else 20.sp,
                                 modifier = Modifier.weight(1f),
-                                fontFamily = if (eventMessage) FontFamily.Monospace else FontFamily.Default
+                                fontFamily = if (eventMessage) FontFamily.Monospace else FontFamily.Default,
+                                onPreviewFile = onPreviewFile
                             )
                         }
                     }
                 }
 
                 is MarkdownBlock.Code -> CodeBlock(text = block.code, language = block.language, userMessage = userMessage)
-                is MarkdownBlock.Quote -> QuoteBlock(text = block.text, userMessage = userMessage)
+                is MarkdownBlock.Quote -> QuoteBlock(
+                    text = block.text,
+                    userMessage = userMessage,
+                    onPreviewFile = onPreviewFile
+                )
             }
         }
     }
@@ -998,17 +1116,50 @@ private fun CodeBlock(text: String, language: String, userMessage: Boolean) {
 }
 
 @Composable
-private fun QuoteBlock(text: String, userMessage: Boolean) {
+private fun InlineMarkdownText(
+    text: String,
+    textColor: Color,
+    fontSize: TextUnit,
+    lineHeight: TextUnit,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight? = null,
+    fontFamily: FontFamily? = null,
+    onPreviewFile: (String, String) -> Unit
+) {
+    val previewLink = remember(text) { previewLinkFromMarkdown(text) }
     Text(
-        text = inlineMarkdown(text, if (userMessage) Canvas else Body),
-        color = if (userMessage) Canvas.copy(alpha = 0.8f) else Muted,
+        text = inlineMarkdown(previewLink?.displayText ?: text, if (previewLink != null) Focus else textColor),
+        color = if (previewLink != null) Focus else textColor,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        fontWeight = fontWeight,
+        fontFamily = fontFamily,
+        textDecoration = if (previewLink != null) TextDecoration.Underline else null,
+        modifier = if (previewLink != null) {
+            modifier.clickable { onPreviewFile(previewLink.path, previewLink.label) }
+        } else {
+            modifier
+        }
+    )
+}
+
+@Composable
+private fun QuoteBlock(
+    text: String,
+    userMessage: Boolean,
+    onPreviewFile: (String, String) -> Unit
+) {
+    InlineMarkdownText(
+        text = text,
+        textColor = if (userMessage) Canvas.copy(alpha = 0.8f) else Muted,
         fontSize = 13.sp,
         lineHeight = 19.sp,
         modifier = Modifier
             .fillMaxWidth()
             .border(BorderStroke(1.dp, if (userMessage) Canvas.copy(alpha = 0.2f) else Hairline), RadiusSmall)
             .background(if (userMessage) Primary.copy(alpha = 0.62f) else Canvas, RadiusSmall)
-            .padding(8.dp)
+            .padding(8.dp),
+        onPreviewFile = onPreviewFile
     )
 }
 
@@ -1127,6 +1278,37 @@ private fun inlineMarkdown(text: String, textColor: Color): AnnotatedString {
         if (index < text.length) {
             append(text.substring(index))
         }
+    }
+}
+
+private data class PreviewLink(val label: String, val path: String, val displayText: String)
+
+private fun previewLinkFromMarkdown(text: String): PreviewLink? {
+    val match = Regex("""\[([^\]]+)]\(([^)]+)\)""").find(text) ?: return null
+    val label = match.groupValues[1].trim()
+    val path = normalizePreviewHref(match.groupValues[2])
+    if (label.isBlank() || path.isBlank()) return null
+    return PreviewLink(label = label, path = path, displayText = text.replace(match.value, label))
+}
+
+private fun normalizePreviewHref(value: String): String {
+    val trimmed = value.substringBefore('#').substringBefore('?').trim()
+    if (trimmed.startsWith("file://", ignoreCase = true)) {
+        return runCatching { java.net.URI(trimmed).path.orEmpty() }.getOrDefault("")
+    }
+    if (Regex("""^[a-z][a-z0-9+.-]*:""", RegexOption.IGNORE_CASE).containsMatchIn(trimmed)) {
+        return ""
+    }
+    return runCatching { java.net.URLDecoder.decode(trimmed, Charsets.UTF_8.name()) }
+        .getOrDefault(trimmed)
+        .trim()
+}
+
+private fun formatBytes(value: Long): String {
+    return when {
+        value < 1024L -> "$value B"
+        value < 1024L * 1024L -> "${"%.1f".format(value / 1024.0)} KB"
+        else -> "${"%.1f".format(value / (1024.0 * 1024.0))} MB"
     }
 }
 
@@ -2633,6 +2815,14 @@ private fun SettingsScreen(state: MobileUiState, viewModel: MobileViewModel) {
                 )
             }
         }
+
+        SettingsPanel(title = if (IsChinese) "开发" else "Developer") {
+            SettingsInfoRow(
+                Icons.Outlined.Code,
+                if (IsChinese) "版本" else "Version",
+                "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+            )
+        }
     }
 }
 
@@ -2874,7 +3064,8 @@ private fun isHiddenChatMessage(message: Message): Boolean {
     if (message.role != "event") return false
     val meta = message.meta.trim().lowercase()
     val text = message.text.trim().lowercase().removeSuffix(".")
-    return meta == "turn" && (text == "turn started" || text == "turn completed")
+    return meta == "raw.notification" ||
+        (meta == "turn" && (text == "turn started" || text == "turn completed"))
 }
 
 private suspend fun scrollChatToBottom(listState: LazyListState, itemCount: Int) {
