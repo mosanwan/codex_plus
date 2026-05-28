@@ -5,6 +5,8 @@ dist-electron/
 *.log
 coverage/
 release/
+ref/images/codex-plus-macos-x64.zip
+ref/images/codex-plus-macos-x64/
 .env
 .env.*
 !.env.example

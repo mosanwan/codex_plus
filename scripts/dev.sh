@@ -1,0 +1,1 @@
+npm run dev:electron:no-sandbox -w @codep/desktop
