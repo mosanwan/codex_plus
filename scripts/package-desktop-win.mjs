@@ -112,21 +112,11 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
     return { electronDist, electronExecutable };
   }
 
-  const { downloadArtifact } = require("@electron/get");
-  const extract = require("extract-zip");
+  const extract = require(require.resolve("extract-zip", { paths: [electronPackageDir, repoRoot] }));
   const electronPackage = JSON.parse(
     await readFile(path.join(electronPackageDir, "package.json"), "utf8")
   );
-  const checksums = JSON.parse(
-    await readFile(path.join(electronPackageDir, "checksums.json"), "utf8")
-  );
-  const zipPath = await downloadArtifact({
-    version: electronPackage.version,
-    artifactName: "electron",
-    platform,
-    arch,
-    checksums
-  });
+  const zipPath = await downloadElectronZip(electronPackage.version, platform, arch);
 
   await rm(electronDist, { recursive: true, force: true });
   await mkdir(electronDist, { recursive: true });
@@ -137,6 +127,19 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
     throw new Error(`electron.exe was not found at ${electronExecutable}. Electron download did not complete.`);
   }
   return { electronDist, electronExecutable };
+}
+
+async function downloadElectronZip(electronVersion, platform, arch) {
+  const artifactName = `electron-v${electronVersion}-${platform}-${arch}.zip`;
+  const zipPath = path.join(releaseDir, artifactName);
+  const url = `https://github.com/electron/electron/releases/download/v${electronVersion}/${artifactName}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download Electron ${electronVersion} from ${url}: ${response.status} ${response.statusText}`);
+  }
+  await mkdir(releaseDir, { recursive: true });
+  await writeFile(zipPath, Buffer.from(await response.arrayBuffer()));
+  return zipPath;
 }
 
 function runNpm(args) {

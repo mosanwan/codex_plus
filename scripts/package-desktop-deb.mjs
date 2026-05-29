@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, rm, writeFile, chmod } from "node:fs/promises";
-import { constants } from "node:fs";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
+const require = createRequire(import.meta.url);
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const desktopPackage = JSON.parse(
   await readFile(path.join(repoRoot, "apps/desktop/package.json"), "utf8")
@@ -25,10 +27,17 @@ const debPath = path.join(releaseDir, `${packageName}_${version}_${arch}.deb`);
 run("npm", ["--workspace", "@codep/codex-adapter", "run", "build"]);
 run("npm", ["--workspace", "@codep/desktop", "run", "build"]);
 
+const electronPackageDir = path.dirname(
+  require.resolve("electron/package.json", {
+    paths: [path.join(repoRoot, "apps/desktop"), repoRoot]
+  })
+);
+const electronDist = await ensureElectronBinary(electronPackageDir, "linux", process.arch);
+
 await rm(stagingRoot, { recursive: true, force: true });
 await mkdir(appResourcesDir, { recursive: true });
 
-await cp(path.join(repoRoot, "node_modules/electron/dist"), optDir, {
+await cp(electronDist, optDir, {
   recursive: true,
   preserveTimestamps: true
 });
@@ -181,6 +190,54 @@ async function installText(filePath, content, mode) {
 async function writeJson(filePath, value) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function ensureElectronBinary(electronPackageDir, platform, nodeArch) {
+  const electronDist = path.join(electronPackageDir, "dist");
+  const electronExecutable = path.join(electronDist, "electron");
+  if (existsSync(electronExecutable)) {
+    return electronDist;
+  }
+
+  const extract = require(require.resolve("extract-zip", { paths: [electronPackageDir, repoRoot] }));
+  const electronPackage = JSON.parse(
+    await readFile(path.join(electronPackageDir, "package.json"), "utf8")
+  );
+  const artifactArch = electronArtifactArch(nodeArch);
+  const zipPath = await downloadElectronZip(electronPackage.version, platform, artifactArch);
+
+  await rm(electronDist, { recursive: true, force: true });
+  await mkdir(electronDist, { recursive: true });
+  await extract(zipPath, { dir: electronDist });
+  await writeFile(path.join(electronPackageDir, "path.txt"), "electron");
+
+  if (!existsSync(electronExecutable)) {
+    throw new Error(`electron was not found at ${electronExecutable}. Electron download did not complete.`);
+  }
+  return electronDist;
+}
+
+async function downloadElectronZip(electronVersion, platform, arch) {
+  const artifactName = `electron-v${electronVersion}-${platform}-${arch}.zip`;
+  const zipPath = path.join(releaseDir, artifactName);
+  const url = `https://github.com/electron/electron/releases/download/v${electronVersion}/${artifactName}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download Electron ${electronVersion} from ${url}: ${response.status} ${response.statusText}`);
+  }
+  await mkdir(releaseDir, { recursive: true });
+  await writeFile(zipPath, Buffer.from(await response.arrayBuffer()));
+  return zipPath;
+}
+
+function electronArtifactArch(nodeArch) {
+  if (nodeArch === "x64") {
+    return "x64";
+  }
+  if (nodeArch === "arm64") {
+    return "arm64";
+  }
+  throw new Error(`Unsupported Electron architecture: ${nodeArch}`);
 }
 
 function debArch(nodeArch) {
