@@ -133,13 +133,13 @@ async function downloadElectronZip(electronVersion, platform, arch) {
   const artifactName = `electron-v${electronVersion}-${platform}-${arch}.zip`;
   const zipPath = path.join(releaseDir, artifactName);
   const url = `https://github.com/electron/electron/releases/download/v${electronVersion}/${artifactName}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to download Electron ${electronVersion} from ${url}: ${response.status} ${response.statusText}`);
-  }
   await mkdir(releaseDir, { recursive: true });
-  await writeFile(zipPath, Buffer.from(await response.arrayBuffer()));
+  run(curlCommand(), ["-L", "--fail", "--retry", "3", "-o", zipPath, url]);
   return zipPath;
+}
+
+function curlCommand() {
+  return process.platform === "win32" ? "curl.exe" : "curl";
 }
 
 function runNpm(args) {
