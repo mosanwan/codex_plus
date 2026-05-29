@@ -151,6 +151,7 @@ fun snapshotFromPayload(payload: JsonElement?): DesktopSnapshot? {
         activeSessionId = root.optionalString("activeSessionId"),
         messages = root["messages"]?.let(::messagesFromJson),
         approvals = root["approvals"]?.let(::approvalsFromJson),
+        periodicTasks = root["periodicTasks"]?.let(::periodicTasksFromJson),
         diffLines = root["diffLines"]?.let(::stringListFromJson),
         isWorking = (root["isWorking"] as? JsonPrimitive)?.booleanOrNull,
         permissionMode = root.optionalString("permissionMode"),
@@ -254,6 +255,32 @@ private fun sessionsFromJson(value: JsonElement): List<Session> {
     }
 }
 
+private fun periodicTasksFromJson(value: JsonElement): List<PeriodicTask> {
+    return value.jsonArray.mapNotNull { it as? JsonObject }.mapNotNull { root ->
+        val id = root.string("id")
+        if (id.isBlank()) return@mapNotNull null
+        PeriodicTask(
+            id = id,
+            name = root.string("name").ifBlank { "Automation" },
+            enabled = root.boolean("enabled"),
+            workspace = root.string("workspace"),
+            sessionId = root.optionalString("sessionId"),
+            trigger = root.string("trigger").ifBlank { "interval" },
+            intervalMs = root.long("intervalMs"),
+            scheduleFrequency = root.string("scheduleFrequency").ifBlank { "daily" },
+            scheduleTime = root.string("scheduleTime"),
+            scheduleWeekdays = root.array("scheduleWeekdays").mapNotNull {
+                (it as? JsonPrimitive)?.longOrNull?.toInt()
+            },
+            status = root.string("status").ifBlank { "idle" },
+            nextRunAt = root.optionalString("nextRunAt")?.toLongOrNull(),
+            lastRunAt = root.optionalString("lastRunAt")?.toLongOrNull(),
+            lastCompletedAt = root.optionalString("lastCompletedAt")?.toLongOrNull(),
+            lastError = root.optionalString("lastError")
+        )
+    }
+}
+
 private fun messagesFromJson(value: JsonElement): List<Message> {
     return value.jsonArray.takeLast(ParsedMessageLimit)
         .mapNotNull { it as? JsonObject }
@@ -268,7 +295,8 @@ private fun messageFromJson(root: JsonObject): Message? {
         role = root.string("role"),
         text = root.string("text"),
         meta = root.string("meta"),
-        attachments = root["attachments"]?.let(::attachmentsFromJson).orEmpty()
+        attachments = root["attachments"]?.let(::attachmentsFromJson).orEmpty(),
+        createdAt = root.long("createdAt").takeIf { it > 0L } ?: System.currentTimeMillis()
     )
 }
 

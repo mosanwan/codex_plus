@@ -20,6 +20,7 @@ import app.codep.mobile.data.Message
 import app.codep.mobile.data.MessageAttachment
 import app.codep.mobile.data.MobileTab
 import app.codep.mobile.data.ModelOption
+import app.codep.mobile.data.PeriodicTask
 import app.codep.mobile.data.RelayConnection
 import app.codep.mobile.data.RelayConnectionState
 import app.codep.mobile.data.RelayDesktopDevice
@@ -87,6 +88,7 @@ data class MobileUiState(
     val activeSessionId: String? = null,
     val messages: List<Message> = emptyList(),
     val approvals: List<Approval> = emptyList(),
+    val periodicTasks: List<PeriodicTask> = emptyList(),
     val diffLines: List<String> = emptyList(),
     val permissionMode: String = "default",
     val model: String = "gpt-5.5",
@@ -468,7 +470,8 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
             id = "local-${System.currentTimeMillis()}",
             role = "user",
             text = text.ifBlank { "Sent attachments" },
-            attachments = attachments
+            attachments = attachments,
+            createdAt = System.currentTimeMillis()
         )
         _state.update {
             it.copy(
@@ -618,27 +621,6 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
         publishReliable("client.open_workspace_path", buildJsonObject { put("workspace", workspace) })
-    }
-
-    fun toggleSessionFavorite(sessionId: String) {
-        if (sessionId.isBlank()) return
-        val currentSession = findSession(_state.value.workspaces, _state.value.sessions, sessionId)
-        val nextFavorite = !(currentSession?.favorite ?: false)
-        _state.update {
-            it.copy(
-                workspaces = updateSessionFavorite(it.workspaces, sessionId, nextFavorite),
-                sessions = it.sessions.map { session ->
-                    if (session.id == sessionId) session.copy(favorite = nextFavorite) else session
-                }
-            )
-        }
-        publishReliable(
-            "client.set_session_favorite",
-            buildJsonObject {
-                put("sessionId", sessionId)
-                put("favorite", nextFavorite)
-            }
-        )
     }
 
     fun renameSession(workspace: String, sessionId: String, title: String) {
@@ -931,6 +913,7 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                 activeSessionId = snapshot.activeSessionId ?: current.activeSessionId,
                 messages = snapshot.messages?.let(::limitMessages) ?: current.messages,
                 approvals = snapshot.approvals ?: current.approvals,
+                periodicTasks = snapshot.periodicTasks ?: current.periodicTasks,
                 diffLines = snapshot.diffLines ?: current.diffLines,
                 permissionMode = snapshot.permissionMode ?: current.permissionMode,
                 model = snapshot.model ?: current.model,
@@ -952,27 +935,6 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun limitMessages(messages: List<Message>): List<Message> {
         return if (messages.size <= StoredMessageLimit) messages else messages.takeLast(StoredMessageLimit)
-    }
-
-    private fun findSession(workspaces: List<Workspace>, sessions: List<Session>, sessionId: String): Session? {
-        return workspaces.asSequence()
-            .flatMap { it.sessions.asSequence() }
-            .firstOrNull { it.id == sessionId }
-            ?: sessions.firstOrNull { it.id == sessionId }
-    }
-
-    private fun updateSessionFavorite(
-        workspaces: List<Workspace>,
-        sessionId: String,
-        favorite: Boolean
-    ): List<Workspace> {
-        return workspaces.map { workspace ->
-            workspace.copy(
-                sessions = workspace.sessions.map { session ->
-                    if (session.id == sessionId) session.copy(favorite = favorite) else session
-                }
-            )
-        }
     }
 
     private fun updateSessionTitle(

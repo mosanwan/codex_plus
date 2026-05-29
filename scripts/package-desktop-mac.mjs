@@ -24,6 +24,7 @@ const releaseDir = path.join(repoRoot, "release");
 const stagingDir = path.join(releaseDir, `macos-${targetArch}`);
 const appPath = path.join(stagingDir, `${productName}.app`);
 const appResourcesDir = path.join(appPath, "Contents", "Resources", "app");
+const appContentsResourcesDir = path.join(appPath, "Contents", "Resources");
 const zipPath = path.join(releaseDir, `${packageName}_${version}_macos_${targetArch}.app.zip`);
 const dmgRoot = path.join(stagingDir, "dmg");
 const dmgPath = path.join(releaseDir, `${packageName}_${version}_macos_${targetArch}.dmg`);
@@ -66,6 +67,13 @@ await cp(
   path.join(appResourcesDir, "dist-electron"),
   { recursive: true }
 );
+await cp(path.join(repoRoot, "apps/desktop/assets"), path.join(appResourcesDir, "assets"), {
+  recursive: true
+});
+await cp(
+  path.join(repoRoot, "apps/desktop/assets/codex-plus.icns"),
+  path.join(appContentsResourcesDir, "codex-plus.icns")
+);
 
 await writeJson(path.join(appResourcesDir, "package.json"), {
   name: packageName,
@@ -89,6 +97,7 @@ setPlistValue(plistPath, "CFBundleDisplayName", "string", productName);
 setPlistValue(plistPath, "CFBundleIdentifier", "string", bundleId);
 setPlistValue(plistPath, "CFBundleShortVersionString", "string", version);
 setPlistValue(plistPath, "CFBundleVersion", "string", version);
+setPlistValue(plistPath, "CFBundleIconFile", "string", "codex-plus.icns");
 setPlistValue(plistPath, "LSApplicationCategoryType", "string", "public.app-category.developer-tools");
 
 run("codesign", ["--force", "--deep", "--sign", "-", appPath]);

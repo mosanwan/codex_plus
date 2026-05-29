@@ -41,6 +41,9 @@ await cp(
   path.join(appResourcesDir, "dist-electron"),
   { recursive: true }
 );
+await cp(path.join(repoRoot, "apps/desktop/assets"), path.join(appResourcesDir, "assets"), {
+  recursive: true
+});
 
 await writeJson(path.join(appResourcesDir, "package.json"), {
   name: packageName,
@@ -65,8 +68,20 @@ set -eu
 export CODEX_PLUS_OZONE_PLATFORM="\${CODEX_PLUS_OZONE_PLATFORM:-x11}"
 OZONE_PLATFORM="$CODEX_PLUS_OZONE_PLATFORM"
 CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM"
+GPU_MODE="\${CODEX_PLUS_GPU_MODE:-integrated}"
+if [ "$GPU_MODE" = "discrete" ]; then
+  export CODEX_PLUS_DISABLE_GPU="\${CODEX_PLUS_DISABLE_GPU:-0}"
+  export DRI_PRIME="\${DRI_PRIME:-1}"
+  export __NV_PRIME_RENDER_OFFLOAD="\${__NV_PRIME_RENDER_OFFLOAD:-1}"
+  export __GLX_VENDOR_LIBRARY_NAME="\${__GLX_VENDOR_LIBRARY_NAME:-nvidia}"
+  export __VK_LAYER_NV_optimus="\${__VK_LAYER_NV_optimus:-NVIDIA_only}"
+  CHROMIUM_ARGS="$CHROMIUM_ARGS --force_high_performance_gpu"
+fi
 if [ "$OZONE_PLATFORM" != "x11" ] && [ -z "\${CODEX_PLUS_DISABLE_WAYLAND_IME:-}" ]; then
   CHROMIUM_ARGS="--ozone-platform=$OZONE_PLATFORM --enable-wayland-ime --wayland-text-input-version=\${CODEX_PLUS_WAYLAND_TEXT_INPUT_VERSION:-3} --enable-features=\${CODEX_PLUS_ENABLE_FEATURES:-WaylandWindowDecorations}"
+  if [ "$GPU_MODE" = "discrete" ]; then
+    CHROMIUM_ARGS="$CHROMIUM_ARGS --force_high_performance_gpu"
+  fi
   if [ -n "\${CODEX_PLUS_GTK_VERSION:-}" ]; then
     CHROMIUM_ARGS="$CHROMIUM_ARGS --gtk-version=\${CODEX_PLUS_GTK_VERSION}"
   fi

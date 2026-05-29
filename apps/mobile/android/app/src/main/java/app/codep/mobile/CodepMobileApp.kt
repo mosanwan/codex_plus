@@ -59,10 +59,9 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.RadioButtonChecked
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Wifi
@@ -115,7 +114,11 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.min
 import app.codep.mobile.data.Approval
 import app.codep.mobile.data.AppLanguage
@@ -127,6 +130,7 @@ import app.codep.mobile.data.Message
 import app.codep.mobile.data.MessageAttachment
 import app.codep.mobile.data.MobileTab
 import app.codep.mobile.data.ModelOption
+import app.codep.mobile.data.PeriodicTask
 import app.codep.mobile.data.RelayConnectionState
 import app.codep.mobile.data.RelayDesktopDevice
 import app.codep.mobile.data.Session
@@ -174,9 +178,9 @@ private const val MaxRenderedMessageCount = 160
 private const val ChatMessageBufferSize = 240
 
 private enum class SessionViewTab {
+    All,
     Recent,
-    Favorites,
-    All
+    Automations
 }
 
 private data class SessionListItem(
@@ -229,8 +233,10 @@ private data class AppStrings(
     val sessionBrowser: String,
     val workspaces: String,
     val recent: String,
-    val favorites: String,
     val all: String,
+    val automations: String,
+    val newConversation: String,
+    val addWorkspace: String,
     val newSession: String,
     val removeWorkspace: String,
     val remove: String,
@@ -238,8 +244,6 @@ private data class AppStrings(
     val save: String,
     val rename: String,
     val renameSession: String,
-    val favorite: String,
-    val unfavorite: String,
     val versionMismatchTitle: String,
     val versionMismatchBody: String,
     val updateDownload: String,
@@ -291,8 +295,10 @@ private val EnglishStrings = AppStrings(
     sessionBrowser = "Session browser",
     workspaces = "workspaces",
     recent = "Recent",
-    favorites = "Favorites",
     all = "All",
+    automations = "Automations",
+    newConversation = "New conversation",
+    addWorkspace = "Add workspace",
     newSession = "New session",
     removeWorkspace = "Remove workspace",
     remove = "Remove",
@@ -300,8 +306,6 @@ private val EnglishStrings = AppStrings(
     save = "Save",
     rename = "Rename",
     renameSession = "Rename session",
-    favorite = "Favorite",
-    unfavorite = "Unfavorite",
     versionMismatchTitle = "Version mismatch",
     versionMismatchBody = "Desktop is running {desktopVersion}. This Android app is {mobileVersion}. Update both apps to the same release.",
     updateDownload = "Open download",
@@ -353,8 +357,10 @@ private val ChineseStrings = AppStrings(
     sessionBrowser = "会话浏览",
     workspaces = "工作区",
     recent = "最近",
-    favorites = "收藏",
     all = "全部",
+    automations = "自动化",
+    newConversation = "新建对话",
+    addWorkspace = "添加工作区",
     newSession = "新建会话",
     removeWorkspace = "移除工作区",
     remove = "移除",
@@ -362,8 +368,6 @@ private val ChineseStrings = AppStrings(
     save = "保存",
     rename = "重命名",
     renameSession = "重命名会话",
-    favorite = "收藏",
-    unfavorite = "取消收藏",
     versionMismatchTitle = "版本不一致",
     versionMismatchBody = "桌面端版本是 {desktopVersion}，当前安卓端版本是 {mobileVersion}。请把两端更新到同一个 Release。",
     updateDownload = "打开下载",
@@ -956,6 +960,7 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
             completion = state.composerCompletion,
             pendingAttachments = state.pendingAttachments,
             working = state.isWorking,
+            turnStartedAt = state.activeSession?.turnStartedAt,
             connected = state.relayState == RelayConnectionState.Connected,
             sessionReady = state.activeSession != null,
             onChange = viewModel::updateComposer,
@@ -1047,6 +1052,13 @@ private fun ApprovalStrip(approvals: List<Approval>, viewModel: MobileViewModel)
 private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> Unit) {
     val isUser = message.role == "user"
     val isEvent = message.role == "event"
+    val meta = message.meta.ifBlank { if (isEvent) "event" else "" }
+    val label = when {
+        isUser -> "You"
+        meta.isNotBlank() -> meta
+        else -> "Codex"
+    }
+    val labelColor = if (isUser) Canvas.copy(alpha = 0.78f) else Muted
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -1065,13 +1077,24 @@ private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> U
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            val meta = message.meta.ifBlank { if (isEvent) "event" else "" }
-            if (!isUser && meta.isNotBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = meta,
-                    color = Muted,
+                    text = label,
+                    color = labelColor,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = remember(message.createdAt) { messageTimeLabel(message.createdAt) },
+                    color = labelColor,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    maxLines = 1
                 )
             }
             MarkdownContent(
@@ -1445,6 +1468,7 @@ private fun Composer(
     completion: ComposerCompletion?,
     pendingAttachments: List<MessageAttachment>,
     working: Boolean,
+    turnStartedAt: Long?,
     connected: Boolean,
     sessionReady: Boolean,
     onChange: (String) -> Unit,
@@ -1473,7 +1497,7 @@ private fun Composer(
     ) {
         if (working || !sessionReady) {
             if (working) {
-                WorkingTurnStatus()
+                WorkingTurnStatus(turnStartedAt = turnStartedAt)
             } else {
                 IdleComposerStatus()
             }
@@ -1584,8 +1608,18 @@ private fun Composer(
 }
 
 @Composable
-private fun WorkingTurnStatus() {
+private fun WorkingTurnStatus(turnStartedAt: Long?) {
     val transition = rememberInfiniteTransition(label = "working-turn")
+    var now by remember(turnStartedAt) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(turnStartedAt) {
+        while (turnStartedAt != null) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val elapsedLabel = turnStartedAt
+        ?.let { formatTurnDuration(now - it) }
+        ?: "0s"
     val pulseScale by transition.animateFloat(
         initialValue = 0.78f,
         targetValue = 1.28f,
@@ -1637,7 +1671,7 @@ private fun WorkingTurnStatus() {
         WorkingActivityDots()
         Spacer(modifier = Modifier.weight(1f))
         Text(
-            text = "turn",
+            text = elapsedLabel,
             color = Muted,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
@@ -1914,6 +1948,7 @@ private fun SendStopButton(
 private fun SessionsScreen(state: MobileUiState, viewModel: MobileViewModel) {
     var selectedView by remember { mutableStateOf(SessionViewTab.Recent) }
     var collapsedWorkspaces by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var newConversationOpen by remember { mutableStateOf(false) }
     val workspaceSessions = remember(state.workspaces) {
         state.workspaces.flatMap { workspace ->
             workspace.sessions.map { session -> SessionListItem(workspace, session) }
@@ -1926,9 +1961,6 @@ private fun SessionsScreen(state: MobileUiState, viewModel: MobileViewModel) {
                 .thenByDescending { it.session.updatedAt }
                 .thenBy { it.session.title.lowercase() }
         )
-    }
-    val favoriteSessions = remember(workspaceSessions) {
-        workspaceSessions.filter { it.session.favorite }
     }
 
     LazyColumn(
@@ -1944,67 +1976,20 @@ private fun SessionsScreen(state: MobileUiState, viewModel: MobileViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            WorkspacePathBox(state = state, viewModel = viewModel)
-        }
-        item {
             SessionsHeader(
                 selected = selectedView,
                 workspaceCount = state.workspaces.size,
                 sessionCount = workspaceSessions.size,
-                favoriteCount = favoriteSessions.size,
-                onSelect = { selectedView = it }
+                automationCount = state.periodicTasks.size,
+                onSelect = { selectedView = it },
+                onNewConversation = { newConversationOpen = true }
             )
         }
         when (selectedView) {
-            SessionViewTab.Recent -> {
-                if (recentSessions.isEmpty()) {
-                    item {
-                        EmptyState(
-                            title = if (IsChinese) "没有最近会话" else "No recent sessions",
-                            body = if (IsChinese) "工作区历史加载后会显示在这里。" else "Recent sessions appear here after workspace history loads."
-                        )
-                    }
-                } else {
-                    items(recentSessions, key = { "${it.workspace.path}:${it.session.id}" }) { item ->
-                        SessionRow(
-                            session = item.session,
-                            meta = "${item.workspace.name} · ${item.session.updatedAt}".trim(' ', '·'),
-                            active = item.session.id == state.activeSessionId,
-                            favorite = item.session.favorite,
-                            onOpen = { viewModel.openSession(item.session.id) },
-                            onToggleFavorite = { viewModel.toggleSessionFavorite(item.session.id) },
-                            onRename = { title -> viewModel.renameSession(item.workspace.path, item.session.id, title) },
-                            onRemove = { viewModel.removeSession(item.workspace.path, item.session.id) }
-                        )
-                    }
-                }
-            }
-
-            SessionViewTab.Favorites -> {
-                if (favoriteSessions.isEmpty()) {
-                    item {
-                        EmptyState(
-                            title = if (IsChinese) "还没有收藏" else "No favorites yet",
-                            body = if (IsChinese) "收藏常用会话后会显示在这里。" else "Star sessions to keep them close."
-                        )
-                    }
-                } else {
-                    items(favoriteSessions, key = { "${it.workspace.path}:${it.session.id}" }) { item ->
-                        SessionRow(
-                            session = item.session,
-                            meta = "${item.workspace.name} · ${item.session.updatedAt}".trim(' ', '·'),
-                            active = item.session.id == state.activeSessionId,
-                            favorite = true,
-                            onOpen = { viewModel.openSession(item.session.id) },
-                            onToggleFavorite = { viewModel.toggleSessionFavorite(item.session.id) },
-                            onRename = { title -> viewModel.renameSession(item.workspace.path, item.session.id, title) },
-                            onRemove = { viewModel.removeSession(item.workspace.path, item.session.id) }
-                        )
-                    }
-                }
-            }
-
             SessionViewTab.All -> {
+                item {
+                    WorkspacePathBox(state = state, viewModel = viewModel)
+                }
                 if (state.workspaces.isEmpty()) {
                     item {
                         EmptyState(
@@ -2031,14 +2016,67 @@ private fun SessionsScreen(state: MobileUiState, viewModel: MobileViewModel) {
                             onStartSession = { viewModel.startSession(workspace.path) },
                             onRemoveWorkspace = { viewModel.removeWorkspace(workspace.path) },
                             onOpenSession = viewModel::openSession,
-                            onToggleFavorite = viewModel::toggleSessionFavorite,
                             onRenameSession = viewModel::renameSession,
                             onRemoveSession = viewModel::removeSession
                         )
                     }
                 }
             }
+
+            SessionViewTab.Recent -> {
+                if (recentSessions.isEmpty()) {
+                    item {
+                        EmptyState(
+                            title = if (IsChinese) "没有最近会话" else "No recent sessions",
+                            body = if (IsChinese) "工作区历史加载后会显示在这里。" else "Recent sessions appear here after workspace history loads."
+                        )
+                    }
+                } else {
+                    items(recentSessions, key = { "${it.workspace.path}:${it.session.id}" }) { item ->
+                        SessionRow(
+                            session = item.session,
+                            meta = "${item.workspace.name} · ${item.session.updatedAt}".trim(' ', '·'),
+                            active = item.session.id == state.activeSessionId,
+                            onOpen = { viewModel.openSession(item.session.id) },
+                            onRename = { title -> viewModel.renameSession(item.workspace.path, item.session.id, title) },
+                            onRemove = { viewModel.removeSession(item.workspace.path, item.session.id) }
+                        )
+                    }
+                }
+            }
+
+            SessionViewTab.Automations -> {
+                if (state.periodicTasks.isEmpty()) {
+                    item {
+                        EmptyState(
+                            title = if (IsChinese) "还没有自动化" else "No automations",
+                            body = if (IsChinese) "桌面端创建自动任务后会显示在这里。" else "Desktop automations appear here after they sync."
+                        )
+                    }
+                } else {
+                    items(state.periodicTasks, key = { it.id }) { task ->
+                        AutomationRow(
+                            task = task,
+                            onOpenSession = {
+                                task.sessionId?.takeIf { it.isNotBlank() }?.let(viewModel::openSession)
+                            }
+                        )
+                    }
+                }
+            }
         }
+    }
+
+    if (newConversationOpen) {
+        NewConversationDialog(
+            workspaces = state.workspaces,
+            currentWorkspace = state.activeWorkspace,
+            onDismiss = { newConversationOpen = false },
+            onCreate = { workspace ->
+                newConversationOpen = false
+                viewModel.startSession(workspace)
+            }
+        )
     }
 }
 
@@ -2249,9 +2287,81 @@ private fun WorkspacePathBox(state: MobileUiState, viewModel: MobileViewModel) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
             modifier = Modifier.height(34.dp)
         ) {
-            Text(S.open, fontSize = 12.sp)
+            Text(S.addWorkspace, fontSize = 12.sp)
         }
     }
+}
+
+@Composable
+private fun NewConversationDialog(
+    workspaces: List<Workspace>,
+    currentWorkspace: String?,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
+    val defaultWorkspace = remember(workspaces, currentWorkspace) {
+        currentWorkspace?.takeIf { current -> workspaces.any { it.path == current } }
+            ?: workspaces.firstOrNull()?.path.orEmpty()
+    }
+    var selectedWorkspace by remember(defaultWorkspace) { mutableStateOf(defaultWorkspace) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Canvas,
+        titleContentColor = Ink,
+        textContentColor = Body,
+        title = { Text(S.newConversation, fontSize = 18.sp, fontWeight = FontWeight.Medium) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (IsChinese) "选择一个工作区来启动新的 Codex Session。" else "Choose a workspace for the new Codex session.",
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    workspaces.forEach { workspace ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RadiusSmall)
+                                .selectable(
+                                    selected = selectedWorkspace == workspace.path,
+                                    onClick = { selectedWorkspace = workspace.path }
+                                )
+                                .border(BorderStroke(1.dp, if (selectedWorkspace == workspace.path) BorderStrong else Hairline), RadiusSmall)
+                                .background(if (selectedWorkspace == workspace.path) SurfaceStrong else Canvas, RadiusSmall)
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = selectedWorkspace == workspace.path,
+                                onClick = { selectedWorkspace = workspace.path },
+                                colors = RadioButtonDefaults.colors(selectedColor = Primary, unselectedColor = Muted)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(workspace.name, color = Ink, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(workspace.path, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedWorkspace.isNotBlank(),
+                onClick = { onCreate(selectedWorkspace) }
+            ) {
+                Text(S.newConversation, color = Ink)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(S.cancel, color = Muted)
+            }
+        }
+    )
 }
 
 @Composable
@@ -2259,8 +2369,9 @@ private fun SessionsHeader(
     selected: SessionViewTab,
     workspaceCount: Int,
     sessionCount: Int,
-    favoriteCount: Int,
-    onSelect: (SessionViewTab) -> Unit
+    automationCount: Int,
+    onSelect: (SessionViewTab) -> Unit,
+    onNewConversation: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -2270,7 +2381,7 @@ private fun SessionsHeader(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 S.sessionBrowser,
                 color = Ink,
@@ -2278,9 +2389,28 @@ private fun SessionsHeader(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f)
             )
-            Text("$workspaceCount ${S.workspaces} · $sessionCount ${S.sessions}", color = Muted, fontSize = 12.sp)
+            Button(
+                onClick = onNewConversation,
+                enabled = workspaceCount > 0,
+                colors = ButtonDefaults.buttonColors(containerColor = Primary, contentColor = Canvas),
+                shape = RadiusSmall,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(S.newConversation, fontSize = 12.sp, maxLines = 1)
+            }
         }
+        Text("$workspaceCount ${S.workspaces} · $sessionCount ${S.sessions}", color = Muted, fontSize = 12.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            SessionViewTabButton(
+                label = S.all,
+                count = workspaceCount,
+                selected = selected == SessionViewTab.All,
+                modifier = Modifier.weight(1f),
+                onClick = { onSelect(SessionViewTab.All) }
+            )
             SessionViewTabButton(
                 label = S.recent,
                 count = sessionCount,
@@ -2289,18 +2419,11 @@ private fun SessionsHeader(
                 onClick = { onSelect(SessionViewTab.Recent) }
             )
             SessionViewTabButton(
-                label = S.favorites,
-                count = favoriteCount,
-                selected = selected == SessionViewTab.Favorites,
+                label = S.automations,
+                count = automationCount,
+                selected = selected == SessionViewTab.Automations,
                 modifier = Modifier.weight(1f),
-                onClick = { onSelect(SessionViewTab.Favorites) }
-            )
-            SessionViewTabButton(
-                label = S.all,
-                count = workspaceCount,
-                selected = selected == SessionViewTab.All,
-                modifier = Modifier.weight(1f),
-                onClick = { onSelect(SessionViewTab.All) }
+                onClick = { onSelect(SessionViewTab.Automations) }
             )
         }
     }
@@ -2346,6 +2469,86 @@ private fun SessionViewTabButton(
 }
 
 @Composable
+private fun AutomationRow(
+    task: PeriodicTask,
+    onOpenSession: () -> Unit
+) {
+    val isSchedule = task.trigger == "schedule"
+    val typeLabel = if (isSchedule) {
+        if (IsChinese) "定时" else "Scheduled"
+    } else {
+        if (IsChinese) "循环" else "Loop"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(Radius)
+            .background(Canvas, Radius)
+            .border(BorderStroke(1.dp, Hairline), Radius)
+            .clickable(enabled = !task.sessionId.isNullOrBlank(), onClick = onOpenSession)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .border(BorderStroke(1.dp, if (isSchedule) Focus else Hairline), RadiusSmall)
+                .background(SurfaceSoft, RadiusSmall),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (isSchedule) Icons.Outlined.Schedule else Icons.Outlined.RadioButtonChecked,
+                contentDescription = null,
+                tint = if (isSchedule) Focus else Body,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    task.name,
+                    color = Ink,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                AutomationTypePill(typeLabel, isSchedule)
+            }
+            Text(
+                workspaceNameFromPath(task.workspace),
+                color = Muted,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                automationScheduleText(task),
+                color = Muted,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        SessionStatusPill(if (!task.enabled && task.status != "running") "paused" else task.status)
+    }
+}
+
+@Composable
+private fun AutomationTypePill(label: String, schedule: Boolean) {
+    Box(
+        modifier = Modifier
+            .border(BorderStroke(1.dp, if (schedule) Focus else Hairline), RoundedCornerShape(999.dp))
+            .background(if (schedule) SurfaceSoft else SurfaceStrong, RoundedCornerShape(999.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp)
+    ) {
+        Text(label, color = if (schedule) Focus else Body, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
 private fun WorkspaceBlock(
     workspace: Workspace,
     active: Boolean,
@@ -2356,7 +2559,6 @@ private fun WorkspaceBlock(
     onStartSession: () -> Unit,
     onRemoveWorkspace: () -> Unit,
     onOpenSession: (String) -> Unit,
-    onToggleFavorite: (String) -> Unit,
     onRenameSession: (String, String, String) -> Unit,
     onRemoveSession: (String, String) -> Unit
 ) {
@@ -2448,9 +2650,7 @@ private fun WorkspaceBlock(
                             session = session,
                             meta = listOf(session.id.take(8), session.updatedAt).filter { it.isNotBlank() }.joinToString(" · "),
                             active = session.id == activeSessionId,
-                            favorite = session.favorite,
                             onOpen = { onOpenSession(session.id) },
-                            onToggleFavorite = { onToggleFavorite(session.id) },
                             onRename = { title -> onRenameSession(workspace.path, session.id, title) },
                             onRemove = { onRemoveSession(workspace.path, session.id) }
                         )
@@ -2497,9 +2697,7 @@ private fun SessionRow(
     session: Session,
     meta: String,
     active: Boolean,
-    favorite: Boolean,
     onOpen: () -> Unit,
-    onToggleFavorite: () -> Unit,
     onRename: (String) -> Unit,
     onRemove: () -> Unit
 ) {
@@ -2567,27 +2765,6 @@ private fun SessionRow(
                     .background(Canvas)
                     .border(BorderStroke(1.dp, Hairline), RadiusSmall)
             ) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (favorite) S.unfavorite else S.favorite,
-                            color = Ink,
-                            fontSize = 13.sp
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            if (favorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
-                            contentDescription = null,
-                            tint = if (favorite) Mustard else Ink,
-                            modifier = Modifier.size(17.dp)
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onToggleFavorite()
-                    }
-                )
                 DropdownMenuItem(
                     text = { Text(S.rename, color = Ink, fontSize = 13.sp) },
                     leadingIcon = {
@@ -2682,49 +2859,6 @@ private fun SessionRow(
                     Text(S.cancel, color = Muted)
                 }
             }
-        )
-    }
-}
-
-@Composable
-private fun SessionIcon(session: Session) {
-    val working = session.status == "working"
-    val transition = rememberInfiniteTransition(label = "session-icon-${session.id}")
-    val pulseScale by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (working) 1.06f else 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1100),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "session-icon-scale"
-    )
-    val pulseAlpha by transition.animateFloat(
-        initialValue = if (working) 0.72f else 1f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1100),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "session-icon-alpha"
-    )
-    Box(
-        modifier = Modifier
-            .size(36.dp)
-            .graphicsLayer {
-                scaleX = pulseScale
-                scaleY = pulseScale
-                alpha = pulseAlpha
-            }
-            .border(BorderStroke(1.dp, if (working) SuccessBorder else Hairline), RadiusSmall)
-            .background(if (working) SuccessSoft else SurfaceSoft, RadiusSmall),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = if (working) Icons.Outlined.RadioButtonChecked else Icons.Outlined.ChatBubbleOutline,
-            contentDescription = null,
-            tint = if (working) Success else Body,
-            modifier = Modifier.size(18.dp)
         )
     }
 }
@@ -2917,6 +3051,52 @@ private fun sessionMetaText(session: Session, meta: String): String {
         if (session.status == "working" && session.turnStartedAt != null) "working" else "",
         session.lastTurnDurationMs?.let { "${it / 1000}s" }.orEmpty()
     ).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+@Composable
+private fun automationScheduleText(task: PeriodicTask): String {
+    return if (task.trigger == "schedule") {
+        val cadence = if (task.scheduleFrequency == "weekly") {
+            if (IsChinese) "每周" else "Weekly"
+        } else {
+            if (IsChinese) "每天" else "Daily"
+        }
+        listOf(cadence, task.scheduleTime.ifBlank { "09:00" }).joinToString(" ")
+    } else {
+        val minutes = (task.intervalMs / 60_000).coerceAtLeast(1)
+        if (IsChinese) "完成后 ${minutes} 分钟" else "${minutes} min after completion"
+    }
+}
+
+private fun workspaceNameFromPath(path: String): String {
+    return path.trimEnd('/').substringAfterLast('/').ifBlank { path }
+}
+
+private fun messageTimeLabel(timestamp: Long): String {
+    val pattern = if (isSameDay(timestamp, System.currentTimeMillis())) {
+        "HH:mm:ss"
+    } else {
+        "MM-dd HH:mm:ss"
+    }
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(timestamp))
+}
+
+private fun formatTurnDuration(milliseconds: Long): String {
+    val totalSeconds = (milliseconds / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+
+    return when {
+        hours > 0L -> "${hours}h ${minutes}m ${seconds}s"
+        minutes > 0L -> "${minutes}m ${seconds}s"
+        else -> "${seconds}s"
+    }
+}
+
+private fun isSameDay(left: Long, right: Long): Boolean {
+    val formatter = SimpleDateFormat("yyyyMMdd", Locale.US)
+    return formatter.format(Date(left)) == formatter.format(Date(right))
 }
 
 private data class SettingsChoice(

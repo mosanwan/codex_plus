@@ -20,14 +20,13 @@ import {
   RotateCw,
   Settings,
   Square,
-  Star,
   Sun,
   Trash2,
   Wifi,
   WifiOff,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ClipboardEvent,
   CSSProperties,
@@ -70,7 +69,10 @@ interface TranscriptEntry {
     | "approval";
   text: string;
   meta?: string;
+  createdAt?: number;
 }
+
+type TranscriptUpdater = (previous: TranscriptEntry[]) => TranscriptEntry[];
 
 interface ApprovalEntry {
   id: string | number;
@@ -143,7 +145,7 @@ type ThemeMode = "dark" | "light";
 type ModelEffort = "low" | "medium" | "high" | "xhigh";
 type ComposerCompletionMode = "file" | "skill";
 type UILanguage = "en" | "zh-CN";
-type MainView = "conversation" | "tasks";
+type MainView = "conversation";
 
 interface ComposerCompletionState {
   mode: ComposerCompletionMode;
@@ -198,8 +200,6 @@ interface RemoteCommandEnvelope {
     permissionMode?: PermissionMode;
     model?: string;
     effort?: ModelEffort;
-    iconId?: string;
-    favorite?: boolean;
     requestId?: string | number;
     decision?: "accept" | "decline" | "cancel";
     mode?: "file" | "skill";
@@ -215,6 +215,7 @@ interface RemoteSnapshotMessage {
   role: "user" | "codex" | "event";
   text: string;
   meta?: string;
+  createdAt?: number;
 }
 
 interface RelayProgressPayload {
@@ -233,9 +234,7 @@ interface RemoteSnapshotWorkspace {
     title: string;
     updatedAt: string;
     status: string;
-    iconId?: string;
     unread?: boolean;
-    favorite?: boolean;
     activeTurnId?: string | null;
     turnStartedAt?: number | null;
     lastTurnDurationMs?: number | null;
@@ -247,8 +246,6 @@ const WORKSPACES_STORAGE_KEY = "codep.workspaces";
 const SESSION_STORAGE_KEY = "codep.sessionsByWorkspace";
 const SESSION_LIST_CACHE_STORAGE_KEY = "codep.sessionListCacheByWorkspace";
 const SESSION_TITLE_OVERRIDES_STORAGE_KEY = "codep.sessionTitleOverrides";
-const SESSION_ICON_OVERRIDES_STORAGE_KEY = "codep.sessionIconOverrides";
-const FAVORITE_SESSIONS_STORAGE_KEY = "codep.favoriteSessions";
 const HIDDEN_SESSIONS_STORAGE_KEY = "codep.hiddenSessions";
 const COLLAPSED_WORKSPACES_STORAGE_KEY = "codep.collapsedWorkspaces";
 const RELAY_ENDPOINT_STORAGE_KEY = "codep.relayEndpoint";
@@ -278,15 +275,17 @@ const BACKGROUND_SESSION_REFRESH_DELAY_MS = 350;
 const RELIABLE_RELAY_RETRY_MS = 5000;
 const DESKTOP_SNAPSHOT_DEBOUNCE_MS = 500;
 const RELIABLE_SNAPSHOT_DEBOUNCE_MS = 10_000;
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const RATE_LIMIT_REFRESH_INTERVAL_MS = 15_000;
 const RELAY_EVENT_TEXT_MAX_CHARS = 1200;
 const RELAY_MESSAGE_TEXT_MAX_CHARS = 4000;
 const RELAY_PROGRESS_DEBOUNCE_MS = 1000;
+const STREAM_TRANSCRIPT_FLUSH_MS = 300;
 const RELAY_RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 30000] as const;
 const RELAY_RECONNECT_JITTER_MS = 500;
 const RELAY_STABLE_CONNECTION_MS = 30000;
 const CLIENT_COMMAND_IDS_STORAGE_KEY = "codep.processedClientCommandIds";
-type SidebarTab = "all" | "recent" | "favorites";
+type SidebarTab = "all" | "recent" | "automations";
 const LANGUAGE_OPTIONS: Array<{ value: UILanguage; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
   { value: "en", label: "English" }
@@ -296,21 +295,24 @@ const UI_TEXT = {
     localWorkspace: "Local Codex workspace",
     expandSidebar: "Expand sidebar",
     collapseSidebar: "Collapse sidebar",
-    favoriteSessions: "Favorite sessions",
     openSession: "Open",
     sessions: "Sessions",
     workspaces: "Workspaces",
     latest: "Latest",
     new: "New",
     addWorkspace: "Add workspace",
+    newConversation: "New conversation",
+    chooseConversationWorkspace: "Choose workspace",
+    chooseConversationWorkspaceBody: "Start a new Codex session in one workspace.",
+    createConversation: "Create conversation",
+    cancel: "Cancel",
     sessionViews: "Session views",
     all: "All",
     recent: "Recent",
-    favorites: "Favorites",
+    automationsTab: "Automations",
     loadingSessions: "Loading sessions...",
     noSessionsLoaded: "No sessions loaded",
     recentEmpty: "Recent sessions appear here after workspace history loads.",
-    favoriteEmpty: "Star sessions you want to keep close. Favorites appear here.",
     workspaceEmpty: "Add one or more workspaces, then open a session under any of them.",
     conversation: "Conversation",
     newCodexSession: "New Codex session",
@@ -368,13 +370,14 @@ const UI_TEXT = {
     periodicTasks: "Automations",
     openPeriodicTasks: "Open automations",
     periodicTasksIntro: "Run a prompt by interval or on a fixed daily/weekly schedule.",
+    editTask: "Edit automation",
     newTask: "New task",
     taskName: "Task name",
     targetWorkspace: "Workspace",
     targetSession: "Target session",
     sessionMode: "Session mode",
     existingSession: "Existing session",
-    dedicatedSession: "Dedicated session",
+    dedicatedSession: "New session",
     triggerType: "Trigger",
     triggerInterval: "After completion",
     triggerSchedule: "Fixed time",
@@ -394,10 +397,13 @@ const UI_TEXT = {
     createTask: "Create task",
     noTasks: "No automations",
     noTasksBody: "Create a task that runs by interval or at a fixed time.",
+    taskTypeInterval: "Loop",
+    taskTypeSchedule: "Scheduled",
+    taskCount: "{count} automations",
     lastRun: "Last run",
     nextRun: "Next run",
     openTaskSession: "Open session",
-    taskSessionPending: "Created when the first run starts.",
+    taskSessionPending: "Created on each run.",
     taskSaved: "Automation saved.",
     taskDeleted: "Automation deleted.",
     taskStarted: "Automation queued.",
@@ -484,33 +490,32 @@ const UI_TEXT = {
     saveSessionName: "Save session name",
     cancelRename: "Cancel rename",
     unreadTurn: "Unread turn",
-    favoriteSession: "Favorite {title}",
-    unfavoriteSession: "Unfavorite {title}",
     renameSession: "Rename {title}",
     removeSession: "Remove {title}",
     removeSessionConfirm: "Remove {title} from Codex+? Codex session history on disk will not be deleted.",
-    changeIcon: "Change icon for {title}",
-    useIcon: "Use {icon} icon"
   },
   "zh-CN": {
     localWorkspace: "本地 Codex 工作区",
     expandSidebar: "展开侧边栏",
     collapseSidebar: "折叠侧边栏",
-    favoriteSessions: "收藏 Session",
     openSession: "打开",
     sessions: "Sessions",
     workspaces: "工作区",
     latest: "最新",
     new: "新建",
     addWorkspace: "添加工作区",
+    newConversation: "新建对话",
+    chooseConversationWorkspace: "选择工作区",
+    chooseConversationWorkspaceBody: "在一个工作区里启动新的 Codex Session。",
+    createConversation: "创建对话",
+    cancel: "取消",
     sessionViews: "Session 视图",
     all: "全部",
     recent: "最近",
-    favorites: "收藏",
+    automationsTab: "自动化",
     loadingSessions: "正在加载 Session...",
     noSessionsLoaded: "还没有加载 Session",
     recentEmpty: "加载工作区历史后，最近使用的 Session 会显示在这里。",
-    favoriteEmpty: "收藏常用 Session 后，会显示在这里。",
     workspaceEmpty: "先添加一个或多个工作区，然后打开或创建 Session。",
     conversation: "对话",
     newCodexSession: "新的 Codex Session",
@@ -568,13 +573,14 @@ const UI_TEXT = {
     periodicTasks: "自动任务",
     openPeriodicTasks: "打开自动任务",
     periodicTasksIntro: "按完成后的间隔运行，或按每天/每周固定时间运行同一条 Prompt。",
+    editTask: "编辑自动任务",
     newTask: "新建任务",
     taskName: "任务名称",
     targetWorkspace: "工作区",
     targetSession: "目标 Session",
     sessionMode: "Session 模式",
     existingSession: "已有 Session",
-    dedicatedSession: "专用 Session",
+    dedicatedSession: "新 Session",
     triggerType: "触发方式",
     triggerInterval: "完成后间隔",
     triggerSchedule: "固定时间",
@@ -594,10 +600,13 @@ const UI_TEXT = {
     createTask: "创建任务",
     noTasks: "还没有自动任务",
     noTasksBody: "创建一个按间隔或固定时间运行的任务。",
+    taskTypeInterval: "循环",
+    taskTypeSchedule: "定时",
+    taskCount: "{count} 个自动任务",
     lastRun: "上次运行",
     nextRun: "下次运行",
     openTaskSession: "打开 Session",
-    taskSessionPending: "第一次运行时创建。",
+    taskSessionPending: "每次运行时创建。",
     taskSaved: "自动任务已保存。",
     taskDeleted: "自动任务已删除。",
     taskStarted: "自动任务已排队。",
@@ -684,13 +693,9 @@ const UI_TEXT = {
     saveSessionName: "保存 Session 名称",
     cancelRename: "取消重命名",
     unreadTurn: "未读 Turn",
-    favoriteSession: "收藏 {title}",
-    unfavoriteSession: "取消收藏 {title}",
     renameSession: "重命名 {title}",
     removeSession: "移除 {title}",
     removeSessionConfirm: "从 Codex+ 移除 {title}？磁盘上的 Codex Session 历史不会被删除。",
-    changeIcon: "修改 {title} 的图标",
-    useIcon: "使用 {icon} 图标"
   }
 } as const;
 type UIMessageKey = keyof typeof UI_TEXT.en;
@@ -754,49 +759,6 @@ const WEEKDAY_OPTIONS = [
   { value: 6, en: "Sat", zh: "周六" },
   { value: 0, en: "Sun", zh: "周日" }
 ];
-const SESSION_ICON_IDS = [
-  "terminal",
-  "code",
-  "branch",
-  "bug",
-  "rocket",
-  "database",
-  "globe",
-  "palette",
-  "shield",
-  "test",
-  "doc",
-  "bot",
-  "spark",
-  "compass",
-  "cube",
-  "graph",
-  "bolt",
-  "key",
-  "cloud",
-  "chip",
-  "package",
-  "workflow",
-  "search",
-  "wrench",
-  "flag",
-  "book",
-  "clock",
-  "pin",
-  "layers",
-  "atom",
-  "eye",
-  "flame",
-  "wave",
-  "gem",
-  "target",
-  "beaker",
-  "satellite",
-  "lock",
-  "brush",
-  "grid"
-] as const;
-type SessionIconId = (typeof SESSION_ICON_IDS)[number];
 const DEMO_MODE =
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
 const DEMO_WORKSPACE = "/home/three/workspace/test_codexp";
@@ -874,14 +836,8 @@ export function App() {
         )
   );
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("recent");
-  const [favoriteSessionIds, setFavoriteSessionIds] = useState<Set<string>>(
-    () => new Set(readStringList(FAVORITE_SESSIONS_STORAGE_KEY))
-  );
   const [hiddenSessionIds, setHiddenSessionIds] = useState<Set<string>>(
     () => new Set(readStringList(HIDDEN_SESSIONS_STORAGE_KEY))
-  );
-  const [sessionIconOverrides, setSessionIconOverrides] = useState<Record<string, string>>(
-    () => readStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY)
   );
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(
     () => new Set(readStringList(UNREAD_SESSIONS_STORAGE_KEY))
@@ -953,6 +909,8 @@ export function App() {
   const [selectedPeriodicTaskId, setSelectedPeriodicTaskId] = useState<string | null>(
     null
   );
+  const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
+  const [isPeriodicTaskModalOpen, setIsPeriodicTaskModalOpen] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(
     () => window.localStorage.getItem(UPDATE_DISMISSED_STORAGE_KEY) ?? ""
@@ -980,15 +938,17 @@ export function App() {
   const runningTurnsBySessionRef = useRef<Record<string, string>>(runningTurnsBySession);
   const queuedRemoteTurnsRef = useRef<Record<string, QueuedRemoteTurn[]>>({});
   const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
-  const turnAssistantTextRef = useRef<Record<string, { turnId: string; text: string }>>(
-    {}
-  );
+  const turnAssistantTextRef = useRef<
+    Record<string, { turnId: string; text: string; createdAt: number }>
+  >({});
   const reliableSnapshotRevisionRef = useRef(0);
   const latestDesktopSnapshotRef = useRef<unknown>(null);
   const desktopSnapshotTimerRef = useRef<number | null>(null);
   const reliableSnapshotTimerRef = useRef<number | null>(null);
   const relayProgressTimerRef = useRef<number | null>(null);
   const pendingRelayProgressRef = useRef<Record<string, RelayProgressPayload>>({});
+  const transcriptFlushTimerRef = useRef<number | null>(null);
+  const pendingTranscriptUpdatersRef = useRef<TranscriptUpdater[]>([]);
   const lastReliableSnapshotSignatureRef = useRef("");
   const processedClientCommandIdsRef = useRef<Set<string>>(
     new Set(readStringList(CLIENT_COMMAND_IDS_STORAGE_KEY))
@@ -1023,11 +983,6 @@ export function App() {
     transcriptRef.current = transcript;
   }, [transcript]);
 
-  const favoriteSessions = favoriteSessionIds.size
-    ? workspaceSessionEntries.filter(({ session: item }) =>
-        favoriteSessionIds.has(item.threadId)
-      )
-    : [];
   const isRelayConfigured = relayEndpoint.trim().length > 0 && relayApiKey.trim().length > 0;
   const relayRetrySeconds = relayRetryDelayMs
     ? Math.max(1, Math.ceil(relayRetryDelayMs / 1000))
@@ -1280,13 +1235,54 @@ export function App() {
 
   function updateTranscriptForActiveThread(
     threadId: string | null | undefined,
-    updater: (previous: TranscriptEntry[]) => TranscriptEntry[]
+    updater: TranscriptUpdater
   ) {
     if (!isActiveEventThread(threadId)) {
       return;
     }
+    flushPendingTranscriptUpdates();
     setTranscript(previous => {
       const next = updater(previous);
+      transcriptRef.current = next;
+      return next;
+    });
+    requestScrollToBottom();
+  }
+
+  function scheduleTranscriptUpdateForActiveThread(
+    threadId: string | null | undefined,
+    updater: TranscriptUpdater
+  ) {
+    if (!isActiveEventThread(threadId)) {
+      return;
+    }
+
+    pendingTranscriptUpdatersRef.current = [
+      ...pendingTranscriptUpdatersRef.current,
+      updater
+    ];
+    if (transcriptFlushTimerRef.current !== null) {
+      return;
+    }
+
+    transcriptFlushTimerRef.current = window.setTimeout(() => {
+      transcriptFlushTimerRef.current = null;
+      flushPendingTranscriptUpdates();
+    }, STREAM_TRANSCRIPT_FLUSH_MS);
+  }
+
+  function flushPendingTranscriptUpdates() {
+    const updaters = pendingTranscriptUpdatersRef.current;
+    if (updaters.length === 0) {
+      return;
+    }
+    pendingTranscriptUpdatersRef.current = [];
+
+    setTranscript(previous => {
+      const next = updaters.reduce(
+        (current, updater) => updater(current),
+        previous
+      );
       transcriptRef.current = next;
       return next;
     });
@@ -1324,7 +1320,8 @@ export function App() {
         markSessionTurnRunning(event.threadId, event.turnId);
         turnAssistantTextRef.current[event.threadId] = {
           turnId: event.turnId,
-          text: ""
+          text: "",
+          createdAt: Date.now()
         };
         updateTranscriptForActiveThread(event.threadId, previous => [
           ...previous,
@@ -1348,14 +1345,14 @@ export function App() {
           isWorking: true,
           message: relayAssistantProgressMessage(event.threadId, event.turnId)
         });
-        updateTranscriptForActiveThread(event.threadId, previous =>
+        scheduleTranscriptUpdateForActiveThread(event.threadId, previous =>
           appendAssistantDelta(previous, event.text)
         );
       }
 
       if (event.type === "command.delta") {
         const id = event.itemId ?? `${event.stream}-${event.turnId}`;
-        updateTranscriptForActiveThread(event.threadId, previous =>
+        scheduleTranscriptUpdateForActiveThread(event.threadId, previous =>
           appendCommandTimelineDelta(previous, id, event.stream, event.text)
         );
       }
@@ -1426,6 +1423,7 @@ export function App() {
       }
 
       if (event.type === "turn.completed") {
+        flushPendingTranscriptUpdates();
         flushRelayProgress();
         clearSessionTurnRunning(event.threadId);
         handleTurnCompletedReminder(event.threadId);
@@ -1435,6 +1433,7 @@ export function App() {
         if (activeWorkspace && activeSession?.threadId === event.threadId) {
           void refreshSessions(activeWorkspace, { preserveSession: activeSession });
         }
+        void refreshRateLimitUsage();
         if (isActiveEventThread(event.threadId)) {
           setStatus("Turn completed.");
         }
@@ -1656,15 +1655,14 @@ export function App() {
     approvals,
     connectionState,
     contextUsage,
-    favoriteSessionIds,
     model,
     modelEffort,
     permissionMode,
     rateLimitUsage,
     relayState,
+    periodicTasks,
     runningTurnsBySession,
     session,
-    sessionIconOverrides,
     sessions,
     status,
     unreadSessionIds,
@@ -1685,6 +1683,9 @@ export function App() {
       }
       if (relayProgressTimerRef.current !== null) {
         window.clearTimeout(relayProgressTimerRef.current);
+      }
+      if (transcriptFlushTimerRef.current !== null) {
+        window.clearTimeout(transcriptFlushTimerRef.current);
       }
     };
   }, []);
@@ -1765,7 +1766,7 @@ export function App() {
     void refreshRateLimitUsage();
     const interval = window.setInterval(() => {
       void refreshRateLimitUsage();
-    }, 60_000);
+    }, RATE_LIMIT_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
   }, [connectionState, desktopApi]);
@@ -2016,13 +2017,6 @@ export function App() {
       writeCachedWorkspaceSessions(next);
       return next;
     });
-    setFavoriteSessionIds(previous => {
-      const next = new Set(
-        Array.from(previous).filter(threadId => !removedSessionIds.has(threadId))
-      );
-      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
-      return next;
-    });
     saveStringMap(
       SESSION_TITLE_OVERRIDES_STORAGE_KEY,
       Object.fromEntries(
@@ -2031,13 +2025,6 @@ export function App() {
         )
       )
     );
-    setSessionIconOverrides(previous => {
-      const next = Object.fromEntries(
-        Object.entries(previous).filter(([threadId]) => !removedSessionIds.has(threadId))
-      );
-      saveStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY, next);
-      return next;
-    });
     setRunningTurnsBySession(previous =>
       Object.fromEntries(
         Object.entries(previous).filter(([threadId]) => !removedSessionIds.has(threadId))
@@ -2068,23 +2055,6 @@ export function App() {
     setStatus(`Removed workspace ${workspaceLabel} from the sidebar.`);
   }
 
-  function toggleFavoriteSession(threadId: string) {
-    setFavoriteSession(threadId, !favoriteSessionIds.has(threadId));
-  }
-
-  function setFavoriteSession(threadId: string, favorite: boolean) {
-    setFavoriteSessionIds(previous => {
-      const next = new Set(previous);
-      if (favorite) {
-        next.add(threadId);
-      } else {
-        next.delete(threadId);
-      }
-      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
-      return next;
-    });
-  }
-
   function removeSession(cwd: string, target: SessionView, options: { confirm?: boolean } = {}) {
     const sessionLabel = target.title || target.threadId.slice(0, 8);
     if (
@@ -2108,15 +2078,6 @@ export function App() {
       };
       workspaceSessionsRef.current = next;
       writeCachedWorkspaceSessions(next);
-      return next;
-    });
-    setFavoriteSessionIds(previous => {
-      if (!previous.has(target.threadId)) {
-        return previous;
-      }
-      const next = new Set(previous);
-      next.delete(target.threadId);
-      saveStringList(FAVORITE_SESSIONS_STORAGE_KEY, Array.from(next));
       return next;
     });
     setUnreadSessionIds(previous => {
@@ -2154,17 +2115,6 @@ export function App() {
     }
 
     setStatus("Session removed from the list. Codex history on disk was not deleted.");
-  }
-
-  function updateSessionIcon(threadId: string, iconId: SessionIconId) {
-    setSessionIconOverrides(previous => {
-      const next = {
-        ...previous,
-        [threadId]: iconId
-      };
-      saveStringMap(SESSION_ICON_OVERRIDES_STORAGE_KEY, next);
-      return next;
-    });
   }
 
   async function renameSession(cwd: string, target: SessionView, title: string) {
@@ -2460,6 +2410,15 @@ export function App() {
     }
   }
 
+  function openNewConversationModal() {
+    setIsNewConversationModalOpen(true);
+  }
+
+  function createConversationForWorkspace(cwd: string) {
+    setIsNewConversationModalOpen(false);
+    void startNewSessionForWorkspace(cwd);
+  }
+
   async function openSession(target: SessionView, cwd = workspace) {
     if (!cwd || !desktopApi || isSessionOpening) {
       return;
@@ -2647,6 +2606,7 @@ export function App() {
         ? await desktopApi.updatePeriodicTask({ taskId, patch: input })
         : await desktopApi.createPeriodicTask(input);
       setSelectedPeriodicTaskId(task.id);
+      setIsPeriodicTaskModalOpen(false);
       setStatus(t("taskSaved"));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -2680,6 +2640,7 @@ export function App() {
     try {
       await desktopApi.deletePeriodicTask({ taskId: task.id });
       setSelectedPeriodicTaskId(current => current === task.id ? null : current);
+      setIsPeriodicTaskModalOpen(false);
       setStatus(t("taskDeleted"));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -2714,6 +2675,18 @@ export function App() {
     );
   }
 
+  function openNewPeriodicTaskModal() {
+    setSelectedPeriodicTaskId(null);
+    setSidebarTab("automations");
+    setIsPeriodicTaskModalOpen(true);
+  }
+
+  function openPeriodicTaskModal(taskId: string) {
+    setSelectedPeriodicTaskId(taskId);
+    setSidebarTab("automations");
+    setIsPeriodicTaskModalOpen(true);
+  }
+
   async function sendTurn() {
     const text = composer.trim();
     const outgoingAttachments = attachments;
@@ -2745,7 +2718,7 @@ export function App() {
     resetVisibleTranscriptWindow();
     setTranscript(previous => [
       ...previous,
-      { id: `user-${Date.now()}`, role: "user", text: displayText }
+      { id: `user-${Date.now()}`, role: "user", text: displayText, createdAt: Date.now() }
     ]);
     requestScrollToBottom();
     setStatus("Sending turn.");
@@ -3072,28 +3045,6 @@ export function App() {
       return;
     }
 
-    if (envelope.type === "client.set_session_icon") {
-      const sessionId = envelope.payload?.sessionId;
-      const iconId = envelope.payload?.iconId;
-      if (sessionId && isSessionIconId(iconId)) {
-        updateSessionIcon(sessionId, iconId);
-        setStatus("Session icon updated from mobile.");
-      }
-      ackClientCommand(clientCommandId);
-      return;
-    }
-
-    if (envelope.type === "client.set_session_favorite") {
-      const sessionId = envelope.payload?.sessionId;
-      const favorite = envelope.payload?.favorite;
-      if (sessionId && typeof favorite === "boolean") {
-        setFavoriteSession(sessionId, favorite);
-        setStatus(favorite ? "Session favorited from mobile." : "Session unfavorited from mobile.");
-      }
-      ackClientCommand(clientCommandId);
-      return;
-    }
-
     if (envelope.type === "client.remove_workspace") {
       const cwd = envelope.payload?.workspace?.trim();
       if (cwd) {
@@ -3173,9 +3124,7 @@ export function App() {
         title: item.title,
         updatedAt: sessionMeta(item),
         status: runningTurnsBySession[item.threadId] ? "working" : "ready",
-        iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
         unread: unreadSessionIds.has(item.threadId),
-        favorite: favoriteSessionIds.has(item.threadId),
         activeTurnId: runningTurnsBySession[item.threadId] ?? null,
         turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
         lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
@@ -3197,9 +3146,7 @@ export function App() {
         title: item.title,
         updatedAt: sessionMeta(item),
         status: runningTurnsBySession[item.threadId] ? "working" : "ready",
-        iconId: sessionIconFor(item.threadId, sessionIconOverrides[item.threadId]),
         unread: unreadSessionIds.has(item.threadId),
-        favorite: favoriteSessionIds.has(item.threadId),
         activeTurnId: runningTurnsBySession[item.threadId] ?? null,
         turnStartedAt: turnStartedAtBySession[item.threadId] ?? null,
         lastTurnDurationMs: lastTurnDurationBySession[item.threadId] ?? null
@@ -3211,6 +3158,23 @@ export function App() {
         title: item.type,
         detail: approvalSummary(item.request),
         risk: item.type === "permissions" ? "high" : "medium"
+      })),
+      periodicTasks: periodicTasks.map(task => ({
+        id: task.id,
+        name: task.name,
+        enabled: task.enabled,
+        workspace: task.workspace,
+        sessionId: task.sessionId ?? null,
+        trigger: task.trigger,
+        intervalMs: task.intervalMs,
+        scheduleFrequency: task.scheduleFrequency,
+        scheduleTime: task.scheduleTime,
+        scheduleWeekdays: task.scheduleWeekdays,
+        status: task.status,
+        nextRunAt: task.nextRunAt ?? null,
+        lastRunAt: task.lastRunAt ?? null,
+        lastCompletedAt: task.lastCompletedAt ?? null,
+        lastError: task.lastError ?? null
       })),
       status,
       permissionMode,
@@ -3330,8 +3294,8 @@ export function App() {
     const current = turnAssistantTextRef.current[threadId];
     turnAssistantTextRef.current[threadId] =
       current?.turnId === turnId
-        ? { turnId, text: current.text + delta }
-        : { turnId, text: delta };
+        ? { ...current, text: current.text + delta }
+        : { turnId, text: delta, createdAt: Date.now() };
   }
 
   function finalAssistantMessageForTurn(threadId: string, turnId: string): string {
@@ -3483,7 +3447,8 @@ export function App() {
       id: `assistant-progress-${turnId}`,
       role: "codex",
       text: relayMessageTextFromTranscriptText(current.text),
-      meta: "streaming"
+      meta: "streaming",
+      createdAt: current.createdAt
     };
   }
 
@@ -4026,46 +3991,19 @@ export function App() {
           </div>
         ) : null}
 
-        <div className="collapsedFavoritesRail" aria-label={t("favoriteSessions")}>
-          {favoriteSessions.map(({ workspace: cwd, session: item }) => {
-            const iconId = sessionIconFor(
-              item.threadId,
-              sessionIconOverrides[item.threadId]
-            );
-            return (
-              <button
-                aria-label={`${t("openSession")} ${item.title}`}
-                className="collapsedSessionButton"
-                data-active={cwd === workspace && item.threadId === session?.threadId}
-                data-icon={iconId}
-                data-working={Boolean(runningTurnsBySession[item.threadId])}
-                key={item.threadId}
-                onClick={() => void openSession(item, cwd)}
-                style={sessionIconStyle(iconId)}
-                title={item.title}
-                type="button"
-              >
-                <SessionGlyph iconId={iconId} />
-                {unreadSessionIds.has(item.threadId) ? (
-                  <span className="collapsedUnreadDot" aria-hidden="true" />
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-
         <section className="panel grow">
           <div className="panelHeader">
             <h2>{t("workspaces")}</h2>
             <div className="panelActions">
               <button
-                className="miniButton"
+                className="miniButton primaryMiniButton"
                 type="button"
-                onClick={chooseWorkspace}
-                aria-label={t("addWorkspace")}
+                disabled={workspaces.length === 0}
+                onClick={openNewConversationModal}
+                aria-label={t("newConversation")}
               >
                 <Plus size={14} />
-                <span>{t("addWorkspace")}</span>
+                <span>{t("newConversation")}</span>
               </button>
             </div>
           </div>
@@ -4089,19 +4027,29 @@ export function App() {
               {t("recent")}
             </button>
             <button
-              aria-selected={sidebarTab === "favorites"}
+              aria-selected={sidebarTab === "automations"}
               className="sidebarTab"
               role="tab"
               type="button"
-              onClick={() => setSidebarTab("favorites")}
+              onClick={() => setSidebarTab("automations")}
             >
-              {t("favorites")}
+              {t("automationsTab")}
             </button>
           </div>
           {workspaces.length > 0 ? (
             <div className="workspaceTree">
               {sidebarTab === "all"
-                ? workspaces.map(cwd => {
+                ? (
+                    <>
+                      <button
+                        className="addWorkspaceRow"
+                        type="button"
+                        onClick={chooseWorkspace}
+                      >
+                        <Plus size={14} />
+                        <span>{t("addWorkspace")}</span>
+                      </button>
+                      {workspaces.map(cwd => {
                     const workspaceItems = workspaceSessions[cwd] ?? [];
                     const isCollapsed = collapsedWorkspaces.has(cwd);
                     return (
@@ -4149,18 +4097,11 @@ export function App() {
                                     cwd === workspace &&
                                     item.threadId === session?.threadId
                                   }
-                                  favorite={favoriteSessionIds.has(item.threadId)}
-                                  iconId={sessionIconFor(
-                                    item.threadId,
-                                    sessionIconOverrides[item.threadId]
-                                  )}
                                   item={item}
                                   key={item.threadId}
                                   language={language}
                                   unread={unreadSessionIds.has(item.threadId)}
                                   working={Boolean(runningTurnsBySession[item.threadId])}
-                                  onFavorite={() => toggleFavoriteSession(item.threadId)}
-                                  onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
                                   onOpen={() => void openSession(item, cwd)}
                                   onRemove={() => removeSession(cwd, item)}
                                   onRename={title => void renameSession(cwd, item, title)}
@@ -4177,53 +4118,20 @@ export function App() {
                         ) : null}
                       </div>
                     );
-                  })
+                  })}
+                    </>
+                  )
                 : sidebarTab === "recent"
-                  ? recentSessions.length > 0
-                    ? recentSessions.map(({ workspace: cwd, session: item }) => (
-                        <div className="favoriteSessionGroup" key={item.threadId}>
-                          <SessionTreeRow
-                            active={cwd === workspace && item.threadId === session?.threadId}
-                            favorite={favoriteSessionIds.has(item.threadId)}
-                            iconId={sessionIconFor(
-                              item.threadId,
-                              sessionIconOverrides[item.threadId]
-                            )}
-                            item={item}
-                            language={language}
-                            meta={`${workspaceName(cwd)} · ${sessionMeta(item)}`}
-                            unread={unreadSessionIds.has(item.threadId)}
-                            working={Boolean(runningTurnsBySession[item.threadId])}
-                            onFavorite={() => toggleFavoriteSession(item.threadId)}
-                            onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
-                            onOpen={() => void openSession(item, cwd)}
-                            onRemove={() => removeSession(cwd, item)}
-                            onRename={title => void renameSession(cwd, item, title)}
-                          />
-                        </div>
-                      ))
-                    : (
-                        <div className="emptyTree">
-                          <p>{t("recentEmpty")}</p>
-                        </div>
-                      )
-                  : favoriteSessions.length > 0
-                  ? favoriteSessions.map(({ workspace: cwd, session: item }) => (
-                      <div className="favoriteSessionGroup" key={item.threadId}>
+                ? recentSessions.length > 0
+                  ? recentSessions.map(({ workspace: cwd, session: item }) => (
+                      <div className="sessionGroup" key={item.threadId}>
                         <SessionTreeRow
                           active={cwd === workspace && item.threadId === session?.threadId}
-                          favorite
-                          iconId={sessionIconFor(
-                            item.threadId,
-                            sessionIconOverrides[item.threadId]
-                          )}
                           item={item}
                           language={language}
                           meta={`${workspaceName(cwd)} · ${sessionMeta(item)}`}
                           unread={unreadSessionIds.has(item.threadId)}
                           working={Boolean(runningTurnsBySession[item.threadId])}
-                          onFavorite={() => toggleFavoriteSession(item.threadId)}
-                          onIconChange={iconId => updateSessionIcon(item.threadId, iconId)}
                           onOpen={() => void openSession(item, cwd)}
                           onRemove={() => removeSession(cwd, item)}
                           onRename={title => void renameSession(cwd, item, title)}
@@ -4232,9 +4140,18 @@ export function App() {
                     ))
                   : (
                       <div className="emptyTree">
-                        <p>{t("favoriteEmpty")}</p>
+                        <p>{t("recentEmpty")}</p>
                       </div>
-                    )}
+                    )
+                : (
+                    <AutomationSidebar
+                      language={language}
+                      selectedTaskId={selectedPeriodicTaskId}
+                      tasks={periodicTasks}
+                      onNewTask={openNewPeriodicTaskModal}
+                      onOpenTask={openPeriodicTaskModal}
+                    />
+                  )}
             </div>
           ) : (
             <div className="emptyTree">
@@ -4312,48 +4229,11 @@ export function App() {
       <section className="conversation" aria-label={t("conversation")}>
         <header className="topbar">
           <div>
-            <h2>
-              {mainView === "tasks"
-                ? t("periodicTasks")
-                : session?.title ?? t("newCodexSession")}
-            </h2>
-            <p>{mainView === "tasks" ? t("periodicTasksIntro") : status}</p>
-          </div>
-          <div className="topbarActions">
-            <button
-              aria-pressed={mainView === "tasks"}
-              className="miniButton"
-              type="button"
-              onClick={() =>
-                setMainView(view => view === "tasks" ? "conversation" : "tasks")
-              }
-            >
-              <CalendarClock size={14} />
-              <span>{t("periodicTasks")}</span>
-            </button>
+            <h2>{session?.title ?? t("newCodexSession")}</h2>
+            <p>{status}</p>
           </div>
         </header>
-
-        {mainView === "tasks" ? (
-          <PeriodicTasksView
-            language={language}
-            model={model}
-            modelEffort={modelEffort}
-            modelOptions={modelSelectOptions}
-            permissionMode={permissionMode}
-            selectedTaskId={selectedPeriodicTaskId}
-            sessionsByWorkspace={workspaceSessions}
-            tasks={periodicTasks}
-            workspaces={workspaces}
-            onCreateOrUpdate={savePeriodicTask}
-            onDelete={deletePeriodicTask}
-            onOpenSession={openPeriodicTaskSession}
-            onRunNow={runPeriodicTaskNow}
-            onSelectTask={setSelectedPeriodicTaskId}
-            onToggleEnabled={togglePeriodicTask}
-          />
-        ) : (
-          <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
+        <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
             {isConversationLoading ? (
               <div className="loadingState">
                 <span className="loadingSpinner" aria-hidden="true" />
@@ -4399,9 +4279,8 @@ export function App() {
               </div>
             )}
           </div>
-        )}
 
-        {mainView === "conversation" ? (
+
         <div className="composerDock">
           <InlineActionBar
             approvals={approvals}
@@ -4599,8 +4478,37 @@ export function App() {
             </div>
           </form>
         </div>
-        ) : null}
       </section>
+
+      {isNewConversationModalOpen ? (
+        <NewConversationModal
+          currentWorkspace={workspace}
+          language={language}
+          workspaces={workspaces}
+          onClose={() => setIsNewConversationModalOpen(false)}
+          onCreate={createConversationForWorkspace}
+        />
+      ) : null}
+
+      {isPeriodicTaskModalOpen ? (
+        <PeriodicTaskModal
+          language={language}
+          model={model}
+          modelEffort={modelEffort}
+          modelOptions={modelSelectOptions}
+          permissionMode={permissionMode}
+          selectedTaskId={selectedPeriodicTaskId}
+          sessionsByWorkspace={workspaceSessions}
+          tasks={periodicTasks}
+          workspaces={workspaces}
+          onClose={() => setIsPeriodicTaskModalOpen(false)}
+          onCreateOrUpdate={savePeriodicTask}
+          onDelete={deletePeriodicTask}
+          onOpenSession={openPeriodicTaskSession}
+          onRunNow={runPeriodicTaskNow}
+          onToggleEnabled={togglePeriodicTask}
+        />
+      ) : null}
 
       {isSettingsOpen ? (
         <SettingsModal
@@ -4637,7 +4545,156 @@ export function App() {
   );
 }
 
-function PeriodicTasksView({
+function NewConversationModal({
+  currentWorkspace,
+  language,
+  workspaces,
+  onClose,
+  onCreate
+}: {
+  currentWorkspace: string | null;
+  language: UILanguage;
+  workspaces: string[];
+  onClose: () => void;
+  onCreate: (workspace: string) => void;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+  const defaultWorkspace =
+    currentWorkspace && workspaces.includes(currentWorkspace)
+      ? currentWorkspace
+      : workspaces[0] ?? "";
+  const [selectedWorkspace, setSelectedWorkspace] = useState(defaultWorkspace);
+
+  useEffect(() => {
+    setSelectedWorkspace(defaultWorkspace);
+  }, [defaultWorkspace]);
+
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <section className="compactModal" role="dialog" aria-modal="true" aria-labelledby="new-conversation-title">
+        <div className="modalHeader">
+          <div>
+            <h2 id="new-conversation-title">{t("newConversation")}</h2>
+            <p>{t("chooseConversationWorkspaceBody")}</p>
+          </div>
+          <button
+            aria-label={t("cancel")}
+            className="iconOnlyButton"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="compactModalBody">
+          <label className="configField">
+            <span>{t("chooseConversationWorkspace")}</span>
+            <select
+              value={selectedWorkspace}
+              onChange={event => setSelectedWorkspace(event.target.value)}
+            >
+              {workspaces.map(cwd => (
+                <option key={cwd} value={cwd}>
+                  {workspaceName(cwd)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="modalActions">
+            <button className="miniButton" type="button" onClick={onClose}>
+              {t("cancel")}
+            </button>
+            <button
+              className="approveButton"
+              disabled={!selectedWorkspace}
+              type="button"
+              onClick={() => onCreate(selectedWorkspace)}
+            >
+              <Plus size={14} />
+              <span>{t("createConversation")}</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AutomationSidebar({
+  language,
+  selectedTaskId,
+  tasks,
+  onNewTask,
+  onOpenTask
+}: {
+  language: UILanguage;
+  selectedTaskId: string | null;
+  tasks: PeriodicTask[];
+  onNewTask: () => void;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+
+  return (
+    <div className="automationPanel">
+      <div className="automationHeader">
+        <div>
+          <strong>{t("periodicTasks")}</strong>
+          <span>{t("taskCount", { count: tasks.length })}</span>
+        </div>
+        <button className="miniButton primaryMiniButton" type="button" onClick={onNewTask}>
+          <Plus size={14} />
+          <span>{t("newTask")}</span>
+        </button>
+      </div>
+      {tasks.length === 0 ? (
+        <div className="emptyTree">
+          <p>{t("noTasksBody")}</p>
+        </div>
+      ) : (
+        <div className="automationList" role="list">
+          {tasks.map(task => (
+            <button
+              className="automationListItem"
+              data-active={task.id === selectedTaskId}
+              data-trigger={task.trigger}
+              key={task.id}
+              role="listitem"
+              type="button"
+              onClick={() => onOpenTask(task.id)}
+            >
+              <span className="automationTypeIcon" aria-hidden="true">
+                {task.trigger === "schedule" ? <CalendarClock size={14} /> : <RotateCw size={14} />}
+              </span>
+              <span className="automationListTitle">
+                <strong>{task.name}</strong>
+                <small>{workspaceName(task.workspace)}</small>
+              </span>
+              <span className="taskStatusPill" data-status={task.status}>
+                {periodicTaskStatusLabel(task, language)}
+              </span>
+              <span className="automationTriggerLine">
+                <span className="automationTriggerPill" data-trigger={task.trigger}>
+                  {task.trigger === "schedule"
+                    ? t("taskTypeSchedule")
+                    : t("taskTypeInterval")}
+                </span>
+                <span>{periodicTaskTriggerLabel(task, language)}</span>
+              </span>
+              <span className="automationNextRun">
+                {t("nextRun")}: {task.nextRunAt ? formatTaskTime(task.nextRunAt) : "—"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeriodicTaskModal({
   language,
   model,
   modelEffort,
@@ -4647,11 +4704,11 @@ function PeriodicTasksView({
   sessionsByWorkspace,
   tasks,
   workspaces,
+  onClose,
   onCreateOrUpdate,
   onDelete,
   onOpenSession,
   onRunNow,
-  onSelectTask,
   onToggleEnabled
 }: {
   language: UILanguage;
@@ -4663,11 +4720,11 @@ function PeriodicTasksView({
   sessionsByWorkspace: Record<string, SessionView[]>;
   tasks: PeriodicTask[];
   workspaces: string[];
+  onClose: () => void;
   onCreateOrUpdate: (input: PeriodicTaskInput, taskId?: string | null) => void | Promise<void>;
   onDelete: (task: PeriodicTask) => void | Promise<void>;
   onOpenSession: (task: PeriodicTask) => void;
   onRunNow: (task: PeriodicTask) => void | Promise<void>;
-  onSelectTask: (taskId: string | null) => void;
   onToggleEnabled: (task: PeriodicTask) => void | Promise<void>;
 }) {
   const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
@@ -4731,65 +4788,34 @@ function PeriodicTasksView({
   }
 
   return (
-    <div className="tasksView">
-      <section className="tasksListPane" aria-label={t("periodicTasks")}>
-        <div className="tasksListHeader">
-          <div>
-            <h3>{t("periodicTasks")}</h3>
-            <p>{tasks.length} {t("periodicTasks")}</p>
-          </div>
-          <button className="miniButton primaryMiniButton" type="button" onClick={() => onSelectTask(null)}>
-            <Plus size={14} />
-            <span>{t("newTask")}</span>
-          </button>
-        </div>
-
-        {tasks.length === 0 ? (
-          <div className="tasksEmpty">
-            <CalendarClock size={20} />
-            <h3>{t("noTasks")}</h3>
-            <p>{t("noTasksBody")}</p>
-          </div>
-        ) : (
-          <div className="tasksList" role="list">
-            {tasks.map(task => (
-              <button
-                className="taskListItem"
-                data-active={task.id === draftTaskId}
-                key={task.id}
-                role="listitem"
-                type="button"
-                onClick={() => onSelectTask(task.id)}
-              >
-                <span className="taskListTitle">
-                  <strong>{task.name}</strong>
-                  <small>{workspaceName(task.workspace)}</small>
-                </span>
-                <span className="taskStatusPill" data-status={task.status}>
-                  {periodicTaskStatusLabel(task, language)}
-                </span>
-                <span className="taskListMeta">
-                  {periodicTaskTriggerLabel(task, language)} · {t("nextRun")}:{" "}
-                  {task.nextRunAt ? formatTaskTime(task.nextRunAt) : "—"}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="taskEditorPane" aria-label={draftTaskId ? t("saveTask") : t("createTask")}>
+    <div className="modalBackdrop" role="presentation">
+      <section
+        className="taskEditorPane taskModal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={draftTaskId ? t("saveTask") : t("createTask")}
+      >
         <form className="taskEditorForm" onSubmit={submitTask}>
           <div className="taskEditorHeader">
             <div>
-              <h3>{draftTaskId ? draft.name || t("periodicTasks") : t("newTask")}</h3>
+              <h3>{draftTaskId ? draft.name || t("editTask") : t("newTask")}</h3>
               <p>{t("periodicTasksIntro")}</p>
             </div>
-            {draftTaskId ? (
-              <span className="taskStatusPill" data-status={selectedTask?.status ?? "idle"}>
-                {selectedTask ? periodicTaskStatusLabel(selectedTask, language) : "idle"}
-              </span>
-            ) : null}
+            <div className="taskEditorHeaderActions">
+              {draftTaskId ? (
+                <span className="taskStatusPill" data-status={selectedTask?.status ?? "idle"}>
+                  {selectedTask ? periodicTaskStatusLabel(selectedTask, language) : "idle"}
+                </span>
+              ) : null}
+              <button
+                aria-label={t("cancel")}
+                className="iconOnlyButton"
+                type="button"
+                onClick={onClose}
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
 
           <div className="taskFormGrid">
@@ -4813,10 +4839,7 @@ function PeriodicTasksView({
                     sessionId:
                       draft.sessionMode === "existing"
                         ? sessionsByWorkspace[nextWorkspace]?.[0]?.threadId
-                        : selectedTask?.sessionMode === "create_once" &&
-                            selectedTask.workspace === nextWorkspace
-                          ? selectedTask.sessionId
-                          : undefined
+                        : undefined
                   });
                 }}
               >
@@ -4842,9 +4865,7 @@ function PeriodicTasksView({
                     sessionId:
                       sessionMode === "existing"
                         ? workspaceSessions[0]?.threadId
-                        : selectedTask?.sessionMode === "create_once"
-                          ? selectedTask.sessionId
-                          : undefined
+                        : undefined
                   });
                 }}
               >
@@ -4870,12 +4891,7 @@ function PeriodicTasksView({
                   ))}
                 </select>
               </label>
-            ) : (
-              <div className="taskSessionHint">
-                <span>{t("targetSession")}</span>
-                <strong>{selectedTask?.sessionId?.slice(0, 8) ?? t("taskSessionPending")}</strong>
-              </div>
-            )}
+            ) : null}
 
             <label className="configField">
               <span>{t("triggerType")}</span>
@@ -4991,43 +5007,42 @@ function PeriodicTasksView({
                 ))}
               </select>
             </label>
+            <label className="configField taskPromptField">
+              <span>{t("taskPrompt")}</span>
+              <textarea
+                value={draft.prompt}
+                onChange={event => updateDraft({ prompt: event.target.value })}
+                placeholder={defaultPeriodicTaskPrompt()}
+              />
+            </label>
+
+            <label className="toggleField taskToggleField">
+              <input
+                checked={draft.enabled ?? true}
+                onChange={event => updateDraft({ enabled: event.target.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("enabled")}</strong>
+                <small>{t("periodicTasksIntro")}</small>
+              </span>
+            </label>
+
+            {selectedTask ? (
+              <div className="taskRunSummary">
+                <span>{t("lastRun")}</span>
+                <strong>{selectedTask.lastRunAt ? formatTaskTime(selectedTask.lastRunAt) : "—"}</strong>
+                <span>{t("nextRun")}</span>
+                <strong>{selectedTask.nextRunAt ? formatTaskTime(selectedTask.nextRunAt) : "—"}</strong>
+                {selectedTask.lastError ? (
+                  <>
+                    <span>Error</span>
+                    <strong>{selectedTask.lastError}</strong>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
           </div>
-
-          <label className="configField taskPromptField">
-            <span>{t("taskPrompt")}</span>
-            <textarea
-              value={draft.prompt}
-              onChange={event => updateDraft({ prompt: event.target.value })}
-              placeholder={defaultPeriodicTaskPrompt()}
-            />
-          </label>
-
-          <label className="toggleField taskToggleField">
-            <input
-              checked={draft.enabled ?? true}
-              onChange={event => updateDraft({ enabled: event.target.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("enabled")}</strong>
-              <small>{t("periodicTasksIntro")}</small>
-            </span>
-          </label>
-
-          {selectedTask ? (
-            <div className="taskRunSummary">
-              <span>{t("lastRun")}</span>
-              <strong>{selectedTask.lastRunAt ? formatTaskTime(selectedTask.lastRunAt) : "—"}</strong>
-              <span>{t("nextRun")}</span>
-              <strong>{selectedTask.nextRunAt ? formatTaskTime(selectedTask.nextRunAt) : "—"}</strong>
-              {selectedTask.lastError ? (
-                <>
-                  <span>Error</span>
-                  <strong>{selectedTask.lastError}</strong>
-                </>
-              ) : null}
-            </div>
-          ) : null}
 
           <div className="taskEditorActions">
             <button className="approveButton" disabled={!canSubmit} type="submit">
@@ -5209,35 +5224,26 @@ function WorkspaceActionMenu({
 
 function SessionTreeRow({
   active,
-  favorite,
-  iconId,
   item,
   language,
   meta,
   unread,
   working,
-  onFavorite,
-  onIconChange,
   onOpen,
   onRemove,
   onRename
 }: {
   active: boolean;
-  favorite: boolean;
-  iconId: SessionIconId;
   item: SessionView;
   language: UILanguage;
   meta?: string;
   unread: boolean;
   working: boolean;
-  onFavorite: () => void;
-  onIconChange: (iconId: SessionIconId) => void;
   onOpen: () => void;
   onRemove: () => void;
   onRename: (title: string) => void | Promise<void>;
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
-  const [isIconPickerOpen, setIsIconPickerOpen] = useState(false);
   const [draftTitle, setDraftTitle] = useState(item.title);
   const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
     textFor(language, key, values);
@@ -5266,7 +5272,6 @@ function SessionTreeRow({
     <div
       className="sessionChild"
       data-active={active}
-      data-icon-picker-open={isIconPickerOpen}
       data-renaming={isRenaming}
       data-working={working}
     >
@@ -5299,31 +5304,16 @@ function SessionTreeRow({
         </form>
       ) : (
         <>
-          <SessionIconPicker
-            currentIconId={iconId}
-            language={language}
-            sessionTitle={item.title}
-            onOpenChange={setIsIconPickerOpen}
-            onIconChange={onIconChange}
-          />
-          <button className="sessionOpenButton" type="button" onClick={onOpen}>
+          <button
+            className="sessionOpenButton"
+            title={item.title}
+            type="button"
+            onClick={onOpen}
+          >
             <ChevronRight size={13} />
             <span className="sessionTitleText">{item.title}</span>
             <small>{meta ?? sessionMeta(item)}</small>
             {unread ? <span className="sessionUnreadDot" aria-label={t("unreadTurn")} /> : null}
-          </button>
-          <button
-            aria-label={
-              favorite
-                ? t("unfavoriteSession", { title: item.title })
-                : t("favoriteSession", { title: item.title })
-            }
-            className="treeIconButton"
-            data-active={favorite}
-            type="button"
-            onClick={onFavorite}
-          >
-            <Star size={14} fill={favorite ? "currentColor" : "none"} />
           </button>
           <button
             aria-label={t("renameSession", { title: item.title })}
@@ -5345,269 +5335,6 @@ function SessionTreeRow({
       )}
     </div>
   );
-}
-
-function SessionIconPicker({
-  currentIconId,
-  language,
-  sessionTitle,
-  onOpenChange,
-  onIconChange
-}: {
-  currentIconId: SessionIconId;
-  language: UILanguage;
-  sessionTitle: string;
-  onOpenChange: (open: boolean) => void;
-  onIconChange: (iconId: SessionIconId) => void;
-}) {
-  const detailsRef = useRef<HTMLDetailsElement | null>(null);
-  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
-    textFor(language, key, values);
-
-  return (
-    <details
-      className="sessionIconPicker"
-      ref={detailsRef}
-      onToggle={() => onOpenChange(detailsRef.current?.open ?? false)}
-    >
-      <summary
-        aria-label={t("changeIcon", { title: sessionTitle })}
-        style={sessionIconStyle(currentIconId)}
-      >
-        <SessionGlyph iconId={currentIconId} />
-      </summary>
-      <div className="sessionIconPopover">
-        {SESSION_ICON_IDS.map(iconId => (
-          <button
-            aria-label={t("useIcon", { icon: iconId })}
-            data-active={iconId === currentIconId}
-            key={iconId}
-            style={sessionIconStyle(iconId)}
-            onClick={() => {
-              onIconChange(iconId);
-              detailsRef.current?.removeAttribute("open");
-            }}
-            type="button"
-          >
-            <SessionGlyph iconId={iconId} />
-          </button>
-        ))}
-      </div>
-    </details>
-  );
-}
-
-function SessionGlyph({ iconId }: { iconId: SessionIconId }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className="sessionGlyph"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      {sessionGlyphPaths(iconId)}
-    </svg>
-  );
-}
-
-function sessionGlyphPaths(iconId: SessionIconId): ReactNode {
-  const common = {
-    stroke: "currentColor",
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    strokeWidth: 1.8
-  };
-
-  switch (iconId) {
-    case "terminal":
-      return (
-        <>
-          <path {...common} d="M4 6.5h16v11H4z" />
-          <path {...common} d="m7 10 2.4 2L7 14" />
-          <path {...common} d="M11.5 14h4" />
-        </>
-      );
-    case "code":
-      return (
-        <>
-          <path {...common} d="m9 8-4 4 4 4" />
-          <path {...common} d="m15 8 4 4-4 4" />
-          <path {...common} d="m13 6-2 12" />
-        </>
-      );
-    case "branch":
-      return (
-        <>
-          <circle {...common} cx="7" cy="6" r="2.2" />
-          <circle {...common} cx="17" cy="18" r="2.2" />
-          <circle {...common} cx="7" cy="18" r="2.2" />
-          <path {...common} d="M7 8.2v7.6" />
-          <path {...common} d="M9.1 6.8c4.4.8 7.2 3.7 7.7 8.9" />
-        </>
-      );
-    case "bug":
-      return (
-        <>
-          <path {...common} d="M8 10.5h8v5a4 4 0 0 1-8 0z" />
-          <path {...common} d="M9 8a3 3 0 0 1 6 0v2.5H9z" />
-          <path {...common} d="M4.5 12H8M16 12h3.5M5.5 17H8M16 17h2.5" />
-        </>
-      );
-    case "rocket":
-      return (
-        <>
-          <path {...common} d="M12 14.5 9.5 12 13 6.5 18 4l-2.5 5z" />
-          <path {...common} d="M9.5 12 6 12.5l2 2M12 14.5l-.5 3.5-2-2" />
-          <path {...common} d="M6.5 17.5 4.5 19.5" />
-        </>
-      );
-    case "database":
-      return (
-        <>
-          <ellipse {...common} cx="12" cy="6.5" rx="6" ry="2.5" />
-          <path {...common} d="M6 6.5v10c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-10" />
-          <path {...common} d="M6 11.5c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5" />
-        </>
-      );
-    case "globe":
-      return (
-        <>
-          <circle {...common} cx="12" cy="12" r="7" />
-          <path {...common} d="M5.5 12h13M12 5c2 2 3 4.3 3 7s-1 5-3 7M12 5c-2 2-3 4.3-3 7s1 5 3 7" />
-        </>
-      );
-    case "palette":
-      return (
-        <>
-          <path {...common} d="M12 4.5a7.5 7.5 0 0 0 0 15h1.2a1.7 1.7 0 0 0 1.2-2.9l-.2-.2a1.4 1.4 0 0 1 1-2.4H16a3.5 3.5 0 0 0 0-7.1A8 8 0 0 0 12 4.5Z" />
-          <circle cx="8.5" cy="10" r="1" fill="currentColor" />
-          <circle cx="11.5" cy="8" r="1" fill="currentColor" />
-          <circle cx="8.8" cy="13.5" r="1" fill="currentColor" />
-        </>
-      );
-    case "shield":
-      return (
-        <>
-          <path {...common} d="M12 4.5 18 7v4.6c0 3.7-2.3 6.1-6 7.9-3.7-1.8-6-4.2-6-7.9V7z" />
-          <path {...common} d="m9.5 12.2 1.8 1.8 3.5-4" />
-        </>
-      );
-    case "test":
-      return (
-        <>
-          <path {...common} d="M9 4.8h6M10 5v5.2l-4 6.7A1.5 1.5 0 0 0 7.3 19h9.4a1.5 1.5 0 0 0 1.3-2.1l-4-6.7V5" />
-          <path {...common} d="M8.4 15h7.2" />
-        </>
-      );
-    case "doc":
-      return (
-        <>
-          <path {...common} d="M7 4.5h6l4 4V19H7z" />
-          <path {...common} d="M13 4.5V9h4" />
-          <path {...common} d="M9.5 13h5M9.5 16h3.5" />
-        </>
-      );
-    case "bot":
-      return (
-        <>
-          <rect {...common} x="6" y="8" width="12" height="9" rx="3" />
-          <path {...common} d="M12 8V5.5M9 5.5h6" />
-          <circle cx="10" cy="12.5" r="1" fill="currentColor" />
-          <circle cx="14" cy="12.5" r="1" fill="currentColor" />
-          <path {...common} d="M10 15h4" />
-        </>
-      );
-    default:
-      return generatedSessionGlyph(iconId, common);
-  }
-}
-
-function generatedSessionGlyph(
-  iconId: SessionIconId,
-  common: {
-    stroke: string;
-    strokeLinecap: "round";
-    strokeLinejoin: "round";
-    strokeWidth: number;
-  }
-): ReactNode {
-  const index = SESSION_ICON_IDS.indexOf(iconId);
-  switch (index % 10) {
-    case 0:
-      return (
-        <>
-          <path {...common} d="M12 4.5 14 9l4.8.4-3.7 3.1 1.2 4.7L12 14.7l-4.3 2.5 1.2-4.7-3.7-3.1L10 9z" />
-          <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-        </>
-      );
-    case 1:
-      return (
-        <>
-          <circle {...common} cx="12" cy="12" r="7" />
-          <path {...common} d="m12 8 2.5 4-2.5 4-2.5-4z" />
-          <path {...common} d="M12 5v3M12 16v3M5 12h3M16 12h3" />
-        </>
-      );
-    case 2:
-      return (
-        <>
-          <path {...common} d="M7 8.5 12 5l5 3.5v7L12 19l-5-3.5z" />
-          <path {...common} d="M7 8.5 12 12l5-3.5M12 12v7" />
-        </>
-      );
-    case 3:
-      return (
-        <>
-          <path {...common} d="M5 17.5h14" />
-          <path {...common} d="M7 15v-3M12 15V7M17 15v-6" />
-          <path {...common} d="m8.5 8.5 3.5-3 3.5 2" />
-        </>
-      );
-    case 4:
-      return (
-        <>
-          <path {...common} d="m13 4-7 9h5l-1 7 8-10h-5z" />
-          <path {...common} d="M7 19h3" />
-        </>
-      );
-    case 5:
-      return (
-        <>
-          <circle {...common} cx="9" cy="10" r="3" />
-          <path {...common} d="M11.2 12.2 17 18" />
-          <path {...common} d="m15 18 3-3" />
-        </>
-      );
-    case 6:
-      return (
-        <>
-          <path {...common} d="M7 16.5h9.5a3 3 0 0 0 .6-5.9 5 5 0 0 0-9.6-1.8A3.9 3.9 0 0 0 7 16.5Z" />
-          <path {...common} d="M10 19h4" />
-        </>
-      );
-    case 7:
-      return (
-        <>
-          <rect {...common} x="7" y="7" width="10" height="10" rx="2" />
-          <path {...common} d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3" />
-          <circle cx="12" cy="12" r="1.6" fill="currentColor" />
-        </>
-      );
-    case 8:
-      return (
-        <>
-          <path {...common} d="M6.5 8.5 12 5l5.5 3.5v7L12 19l-5.5-3.5z" />
-          <path {...common} d="M9 12h6M12 9v6" />
-        </>
-      );
-    default:
-      return (
-        <>
-          <path {...common} d="M5 12h4l2-4 2 8 2-4h4" />
-          <path {...common} d="M6.5 18.5 17.5 5.5" />
-        </>
-      );
-  }
 }
 
 function SettingsModal({
@@ -6523,7 +6250,8 @@ function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMess
     return {
       id: entry.id,
       role: "user",
-      text: relayMessageTextFromTranscriptText(entry.text)
+      text: relayMessageTextFromTranscriptText(entry.text),
+      createdAt: transcriptEntryCreatedAt(entry)
     };
   }
   if (entry.role === "assistant") {
@@ -6531,15 +6259,30 @@ function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMess
       id: entry.id,
       role: "codex",
       text: relayMessageTextFromTranscriptText(entry.text),
-      meta: entry.meta
+      meta: entry.meta,
+      createdAt: transcriptEntryCreatedAt(entry)
     };
   }
   return {
     id: entry.id,
     role: "event",
     text: relayTextFromTranscriptEntry(entry),
-    meta: roleLabel(entry.role)
+    meta: roleLabel(entry.role),
+    createdAt: transcriptEntryCreatedAt(entry)
   };
+}
+
+function transcriptEntryCreatedAt(entry: TranscriptEntry): number {
+  return entry.createdAt ?? timestampFromEntryId(entry.id) ?? Date.now();
+}
+
+function timestampFromEntryId(id: string): number | null {
+  const match = /(?:^|-)(\d{13})(?:$|-)/.exec(id);
+  if (!match) {
+    return null;
+  }
+  const timestamp = Number.parseInt(match[1], 10);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function relayTextFromTranscriptEntry(entry: TranscriptEntry): string {
@@ -6794,7 +6537,7 @@ function ComposerCompletionMenu({
   );
 }
 
-function TimelineEntry({
+const TimelineEntry = memo(function TimelineEntry({
   entry,
   language
 }: {
@@ -6813,9 +6556,9 @@ function TimelineEntry({
       </div>
     </article>
   );
-}
+});
 
-function MarkdownContent({ text }: { text: string }) {
+const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
   return (
     <div className="markdownContent">
       <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
@@ -6823,7 +6566,7 @@ function MarkdownContent({ text }: { text: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 const markdownComponents: Components = {
   code(props) {
@@ -6933,7 +6676,12 @@ function appendAssistantDelta(
     return next;
   }
 
-  next.push({ id: `assistant-${Date.now()}`, role: "assistant", text: delta });
+  next.push({
+    id: `assistant-${Date.now()}`,
+    role: "assistant",
+    text: delta,
+    createdAt: Date.now()
+  });
   return next;
 }
 
@@ -7738,30 +7486,6 @@ function sessionMeta(session: SessionView): string {
   }
   const date = new Date(session.updatedAt * 1000);
   return `${prefix} · ${date.toLocaleString()}`;
-}
-
-function sessionIconFor(threadId: string, override: string | undefined): SessionIconId {
-  if (isSessionIconId(override)) {
-    return override;
-  }
-  const seed = Array.from(threadId).reduce((sum, character) => {
-    return sum + character.charCodeAt(0);
-  }, 0);
-  return SESSION_ICON_IDS[seed % SESSION_ICON_IDS.length];
-}
-
-function isSessionIconId(value: unknown): value is SessionIconId {
-  return typeof value === "string" && SESSION_ICON_IDS.includes(value as SessionIconId);
-}
-
-function sessionIconStyle(iconId: SessionIconId): CSSProperties {
-  const index = SESSION_ICON_IDS.indexOf(iconId);
-  const hue = (index * 41 + 12) % 360;
-  return {
-    "--session-icon-bg": `hsl(${hue} 70% 18%)`,
-    "--session-icon-fg": `hsl(${hue} 95% 74%)`,
-    "--session-icon-soft": `hsl(${hue} 58% 30%)`
-  } as CSSProperties;
 }
 
 function workspaceName(workspace: string): string {

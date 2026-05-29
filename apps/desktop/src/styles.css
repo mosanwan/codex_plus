@@ -17,6 +17,8 @@
   --color-success: #76d985;
   --color-success-border: #318f42;
   --color-success-soft: #102719;
+  --color-info: #9bbcff;
+  --color-info-border: #458fff;
   --color-danger: #ff9f74;
   --color-danger-soft: #311912;
   --color-focus: #8db6ff;
@@ -76,6 +78,8 @@
   --color-success: #006400;
   --color-success-border: #39bf45;
   --color-success-soft: #f5fff7;
+  --color-info: #254fad;
+  --color-info-border: #458fff;
   --color-danger: #aa2d00;
   --color-danger-soft: #fff4ed;
   --color-focus: #1b61c9;
@@ -282,68 +286,6 @@ textarea:focus-visible {
 .compactIconButton {
   width: 30px;
   height: 30px;
-}
-
-.collapsedFavoritesRail {
-  display: none;
-}
-
-.sidebar[data-collapsed="true"] .collapsedFavoritesRail {
-  display: flex;
-  min-height: 0;
-  width: 100%;
-  flex: 1 1 auto;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-sm);
-  overflow-y: auto;
-  padding-top: var(--space-sm);
-}
-
-.collapsedSessionButton {
-  display: grid;
-  position: relative;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border: 1px solid var(--session-icon-soft);
-  border-radius: var(--radius-md);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-bg);
-}
-
-.collapsedSessionButton > *,
-.sessionChild > * {
-  position: relative;
-  z-index: 1;
-}
-
-.collapsedSessionButton[data-working="true"] {
-  border-color: transparent;
-  animation: sessionWorkingIconPulse 1.8s ease-in-out infinite;
-}
-
-.collapsedSessionButton:hover,
-.collapsedSessionButton[data-active="true"] {
-  border-color: var(--session-icon-fg);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-soft);
-}
-
-.collapsedSessionButton[data-active="true"] {
-  border-color: var(--color-primary);
-  box-shadow: inset 0 0 0 2px var(--session-icon-fg);
-}
-
-.collapsedUnreadDot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--color-canvas);
-  border-radius: var(--radius-pill);
-  background: var(--color-danger);
 }
 
 .brand p,
@@ -653,6 +595,8 @@ textarea:focus-visible {
 
 .pathButton,
 .sessionItem,
+.addWorkspaceRow,
+.automationListItem,
 .treeIconButton,
 .sidebarTab,
 .miniButton,
@@ -686,6 +630,8 @@ textarea:focus-visible {
 
 .pathButton:hover,
 .sessionItem:hover,
+.addWorkspaceRow:hover,
+.automationListItem:hover,
 .treeIconButton:hover,
 .sidebarTab:hover,
 .miniButton:hover {
@@ -765,6 +711,141 @@ textarea:focus-visible {
   gap: var(--space-sm);
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.addWorkspaceRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 34px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-md);
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.automationPanel {
+  display: grid;
+  align-content: start;
+  gap: var(--space-md);
+  min-height: 0;
+}
+
+.automationHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.automationHeader div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.automationHeader strong {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.automationHeader span {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.automationList {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.automationListItem {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: var(--space-xs) var(--space-sm);
+  width: 100%;
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm);
+  text-align: left;
+}
+
+.automationListItem[data-active="true"] {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-soft);
+}
+
+.automationTypeIcon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
+  background: var(--color-surface-soft);
+}
+
+.automationListItem[data-trigger="schedule"] .automationTypeIcon {
+  color: var(--color-info);
+}
+
+.automationListTitle {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.automationListTitle strong,
+.automationListTitle small,
+.automationTriggerLine,
+.automationNextRun {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automationListTitle strong {
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.automationListTitle small,
+.automationTriggerLine,
+.automationNextRun {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.automationTriggerLine,
+.automationNextRun {
+  grid-column: 2 / -1;
+}
+
+.automationTriggerPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-right: var(--space-xs);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-xs);
+  color: var(--color-muted);
+  background: var(--color-surface-soft);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.automationTriggerPill[data-trigger="schedule"] {
+  border-color: var(--color-info-border);
+  color: var(--color-info);
 }
 
 .workspaceGroup {
@@ -1001,7 +1082,7 @@ textarea:focus-visible {
 .sessionChild {
   display: grid;
   position: relative;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 2px;
   width: 100%;
@@ -1021,10 +1102,6 @@ textarea:focus-visible {
 
 .sessionChild[data-working="true"] {
   animation: sessionWorkingRowPulse 1.8s ease-in-out infinite;
-}
-
-.sessionChild[data-icon-picker-open="true"] {
-  z-index: 24;
 }
 
 .sessionChild[data-active="true"] {
@@ -1094,86 +1171,6 @@ textarea:focus-visible {
   box-shadow: 0 0 0 3px var(--color-danger-soft);
 }
 
-.sessionGlyph {
-  width: 20px;
-  height: 20px;
-}
-
-.sessionIconPicker {
-  position: relative;
-}
-
-.sessionIconPicker[open] {
-  z-index: 25;
-}
-
-.sessionIconPicker summary {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid var(--session-icon-soft);
-  border-radius: var(--radius-sm);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-bg);
-  cursor: pointer;
-  list-style: none;
-}
-
-.sessionIconPicker summary::-webkit-details-marker {
-  display: none;
-}
-
-.sessionIconPicker summary:hover,
-.sessionIconPicker[open] summary {
-  border-color: var(--session-icon-fg);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-soft);
-}
-
-.sessionChild[data-active="true"] .sessionIconPicker summary {
-  color: var(--color-selected-fg);
-}
-
-.sessionChild[data-active="true"] .sessionIconPicker summary:hover,
-.sessionChild[data-active="true"] .sessionIconPicker[open] summary {
-  border-color: var(--color-active-control-border);
-  background: var(--color-active-control);
-}
-
-.sessionIconPopover {
-  position: absolute;
-  z-index: 22;
-  top: calc(100% + 4px);
-  left: 0;
-  display: grid;
-  grid-template-columns: repeat(5, 32px);
-  gap: 4px;
-  border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-sm);
-  padding: 6px;
-  background: var(--color-canvas);
-  box-shadow: 0 10px 24px var(--color-menu-shadow);
-}
-
-.sessionIconPopover button {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border: 1px solid var(--session-icon-soft);
-  border-radius: var(--radius-sm);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-bg);
-}
-
-.sessionIconPopover button:hover,
-.sessionIconPopover button[data-active="true"] {
-  border-color: var(--session-icon-fg);
-  color: var(--session-icon-fg);
-  background: var(--session-icon-soft);
-}
-
 .sessionChild[data-active="true"] .sessionOpenButton small {
   color: var(--color-selected-muted);
 }
@@ -1226,7 +1223,7 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
-.favoriteSessionGroup {
+.sessionGroup {
   display: flex;
   flex-direction: column;
 }
@@ -1643,24 +1640,26 @@ textarea:focus-visible {
 
 .taskEditorForm {
   display: grid;
-  grid-template-rows: auto auto auto auto auto;
-  gap: var(--space-lg);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   max-height: 100%;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .taskFormGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-md);
-  padding: 0 var(--space-lg);
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-lg);
 }
 
 .taskPromptField,
 .taskToggleField,
-.taskRunSummary,
-.taskEditorActions {
-  margin: 0 var(--space-lg);
+.taskRunSummary {
+  grid-column: 1 / -1;
 }
 
 .taskPromptField textarea {
@@ -1761,7 +1760,9 @@ textarea:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
-  padding-bottom: var(--space-lg);
+  border-top: 1px solid var(--color-hairline);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-canvas);
 }
 
 .loadingState {
@@ -2276,27 +2277,6 @@ textarea:focus-visible {
   }
 }
 
-@keyframes sessionWorkingIconPulse {
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 1px var(--color-success-border),
-      0 0 0 4px color-mix(in srgb, var(--color-success-border) 18%, transparent);
-  }
-
-  33% {
-    box-shadow:
-      0 0 0 1px var(--color-signature-yellow),
-      0 0 0 4px color-mix(in srgb, var(--color-signature-yellow) 20%, transparent);
-  }
-
-  66% {
-    box-shadow:
-      0 0 0 1px var(--color-signature-mint),
-      0 0 0 4px color-mix(in srgb, var(--color-signature-mint) 22%, transparent);
-  }
-}
-
 @keyframes sessionWorkingRowPulse {
   0%,
   100% {
@@ -2324,7 +2304,6 @@ textarea:focus-visible {
   .composerStatus[data-state="working"] .statusDot,
   .statusPulse span,
   .loadingSpinner,
-  .collapsedSessionButton[data-working="true"],
   .sessionChild[data-working="true"] {
     animation: none;
   }
@@ -2731,6 +2710,43 @@ textarea:focus-visible {
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-lg);
   background: var(--color-canvas);
+}
+
+.compactModal,
+.taskModal {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-canvas);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 28%);
+}
+
+.compactModal {
+  width: min(440px, 100%);
+}
+
+.compactModalBody {
+  display: grid;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+}
+
+.taskModal {
+  width: min(880px, 100%);
+  height: min(820px, calc(100vh - 48px));
+}
+
+.taskEditorHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
 }
 
 .updateModal {

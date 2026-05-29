@@ -71,6 +71,9 @@ await cp(
   path.join(appResourcesDir, "dist-electron"),
   { recursive: true }
 );
+await cp(path.join(repoRoot, "apps/desktop/assets"), path.join(appResourcesDir, "assets"), {
+  recursive: true
+});
 
 await writeJson(path.join(appResourcesDir, "package.json"), {
   name: packageName,

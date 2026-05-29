@@ -7,6 +7,7 @@ import {
   nativeImage,
   screen,
   shell,
+  type NativeImage,
   type OpenDialogOptions
 } from "electron";
 import { execFile } from "node:child_process";
@@ -194,11 +195,18 @@ const DEFAULT_GITHUB_RELEASE_API_URL =
   "https://api.github.com/repos/mosanwan/codex_plus/releases/latest";
 const UPDATE_CHECK_TIMEOUT_MS = 8000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 120000;
+const DESKTOP_ICON_PATH = path.resolve(__dirname, "..", "assets", "codex-plus.png");
+
+function desktopIconImage(): NativeImage | undefined {
+  const image = nativeImage.createFromPath(DESKTOP_ICON_PATH);
+  return image.isEmpty() ? undefined : image;
+}
 
 function createWindow(): void {
   const primaryWorkArea = screen.getPrimaryDisplay().workArea;
   const width = Math.min(1280, primaryWorkArea.width);
   const height = Math.min(820, primaryWorkArea.height);
+  const icon = desktopIconImage();
   mainWindow = new BrowserWindow({
     width,
     height,
@@ -210,6 +218,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#f6f7f8",
+    ...(icon ? { icon } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -287,6 +296,10 @@ function presentMainWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const icon = desktopIconImage();
+  if (process.platform === "darwin" && icon) {
+    app.dock?.setIcon(icon);
+  }
   registerIpcHandlers();
   createWindow();
 
@@ -908,7 +921,8 @@ async function checkForDesktopUpdate(): Promise<DesktopUpdateInfo> {
   }
 
   const downloadUrl = selectDownloadUrl(manifest);
-  const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
+  const versionComparison = compareVersions(latestVersion, currentVersion);
+  const updateAvailable = versionComparison > 0;
   const downloadedPath =
     updateAvailable && downloadUrl
       ? await downloadDesktopUpdate(downloadUrl, latestVersion).catch(() => undefined)
@@ -1499,10 +1513,6 @@ async function ensurePeriodicTaskSession(
     if (!task.sessionId) {
       throw new Error("Periodic task requires a target session.");
     }
-    return task.sessionId;
-  }
-
-  if (task.sessionId) {
     return task.sessionId;
   }
 

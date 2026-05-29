@@ -47,6 +47,24 @@ data class Workspace(
     val sessions: List<Session> = emptyList()
 )
 
+data class PeriodicTask(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = true,
+    val workspace: String = "",
+    val sessionId: String? = null,
+    val trigger: String = "interval",
+    val intervalMs: Long = 0,
+    val scheduleFrequency: String = "daily",
+    val scheduleTime: String = "",
+    val scheduleWeekdays: List<Int> = emptyList(),
+    val status: String = "idle",
+    val nextRunAt: Long? = null,
+    val lastRunAt: Long? = null,
+    val lastCompletedAt: Long? = null,
+    val lastError: String? = null
+)
+
 data class MessageAttachment(
     val id: String,
     val kind: String,
@@ -61,7 +79,8 @@ data class Message(
     val role: String,
     val text: String,
     val meta: String = "",
-    val attachments: List<MessageAttachment> = emptyList()
+    val attachments: List<MessageAttachment> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 data class ComposerSuggestion(
@@ -115,6 +134,7 @@ data class DesktopSnapshot(
     val activeSessionId: String? = null,
     val messages: List<Message>? = null,
     val approvals: List<Approval>? = null,
+    val periodicTasks: List<PeriodicTask>? = null,
     val diffLines: List<String>? = null,
     val isWorking: Boolean? = null,
     val permissionMode: String? = null,
