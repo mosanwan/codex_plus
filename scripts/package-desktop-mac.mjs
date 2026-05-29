@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +11,7 @@ if (process.platform !== "darwin") {
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
+const require = createRequire(import.meta.url);
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const desktopPackage = JSON.parse(
   await readFile(path.join(repoRoot, "apps/desktop/package.json"), "utf8")
@@ -39,13 +41,12 @@ if (targetArch !== process.arch) {
 run("npm", ["--workspace", "@codep/codex-adapter", "run", "build"]);
 run("npm", ["--workspace", "@codep/desktop", "run", "build"]);
 
-const electronApp = path.join(repoRoot, "node_modules/electron/dist/Electron.app");
-if (!existsSync(electronApp)) {
-  installElectronBinary("darwin", targetArch);
-}
-if (!existsSync(electronApp)) {
-  throw new Error(`Electron.app was not found at ${electronApp}. Electron install did not complete.`);
-}
+const electronPackageDir = path.dirname(
+  require.resolve("electron/package.json", {
+    paths: [path.join(repoRoot, "apps/desktop"), repoRoot]
+  })
+);
+const electronApp = await ensureElectronBinary(electronPackageDir, "darwin", targetArch);
 
 await rm(stagingDir, { recursive: true, force: true });
 await rm(zipPath, { force: true });
@@ -121,21 +122,41 @@ function run(command, args) {
   });
 }
 
-function installElectronBinary(platform, arch) {
-  const installScript = path.join(repoRoot, "node_modules/electron/install.js");
-  if (!existsSync(installScript)) {
-    throw new Error(`Electron install script was not found at ${installScript}. Run npm ci first.`);
+async function ensureElectronBinary(electronPackageDir, platform, arch) {
+  const electronDist = path.join(electronPackageDir, "dist");
+  const electronApp = path.join(electronDist, "Electron.app");
+  if (existsSync(electronApp)) {
+    return electronApp;
   }
-  execFileSync(process.execPath, [installScript], {
-    cwd: repoRoot,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      ELECTRON_SKIP_BINARY_DOWNLOAD: "",
-      npm_config_platform: platform,
-      npm_config_arch: arch
-    }
+
+  const { downloadArtifact } = require("@electron/get");
+  const extract = require("extract-zip");
+  const electronPackage = JSON.parse(
+    await readFile(path.join(electronPackageDir, "package.json"), "utf8")
+  );
+  const checksums = JSON.parse(
+    await readFile(path.join(electronPackageDir, "checksums.json"), "utf8")
+  );
+  const zipPath = await downloadArtifact({
+    version: electronPackage.version,
+    artifactName: "electron",
+    platform,
+    arch,
+    checksums
   });
+
+  await rm(electronDist, { recursive: true, force: true });
+  await mkdir(electronDist, { recursive: true });
+  await extract(zipPath, { dir: electronDist });
+  await writeFile(
+    path.join(electronPackageDir, "path.txt"),
+    "Electron.app/Contents/MacOS/Electron"
+  );
+
+  if (!existsSync(electronApp)) {
+    throw new Error(`Electron.app was not found at ${electronApp}. Electron download did not complete.`);
+  }
+  return electronApp;
 }
 
 async function writeJson(filePath, value) {

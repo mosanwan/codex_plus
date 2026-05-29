@@ -40,14 +40,11 @@ const electronPackageJson = require.resolve("electron/package.json", {
   paths: [path.join(repoRoot, "apps/desktop"), repoRoot]
 });
 const electronPackageDir = path.dirname(electronPackageJson);
-const electronDist = path.join(electronPackageDir, "dist");
-const electronExecutable = path.join(electronDist, "electron.exe");
-if (!existsSync(electronExecutable)) {
-  installElectronBinary(electronPackageDir, targetArch);
-}
-if (!existsSync(electronExecutable)) {
-  throw new Error(`electron.exe was not found at ${electronExecutable}. Electron install did not complete.`);
-}
+const { electronDist, electronExecutable } = await ensureElectronBinary(
+  electronPackageDir,
+  "win32",
+  targetArch
+);
 
 await rm(stagingDir, { recursive: true, force: true });
 await rm(zipPath, { force: true });
@@ -108,23 +105,38 @@ function run(command, args) {
   });
 }
 
-function installElectronBinary(electronPackageDir, arch) {
-  runWithEnv(process.execPath, [path.join(electronPackageDir, "install.js")], {
-    ELECTRON_SKIP_BINARY_DOWNLOAD: "",
-    npm_config_platform: "win32",
-    npm_config_arch: arch
-  });
-}
+async function ensureElectronBinary(electronPackageDir, platform, arch) {
+  const electronDist = path.join(electronPackageDir, "dist");
+  const electronExecutable = path.join(electronDist, "electron.exe");
+  if (existsSync(electronExecutable)) {
+    return { electronDist, electronExecutable };
+  }
 
-function runWithEnv(command, args, envPatch) {
-  execFileSync(command, args, {
-    cwd: repoRoot,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      ...envPatch
-    }
+  const { downloadArtifact } = require("@electron/get");
+  const extract = require("extract-zip");
+  const electronPackage = JSON.parse(
+    await readFile(path.join(electronPackageDir, "package.json"), "utf8")
+  );
+  const checksums = JSON.parse(
+    await readFile(path.join(electronPackageDir, "checksums.json"), "utf8")
+  );
+  const zipPath = await downloadArtifact({
+    version: electronPackage.version,
+    artifactName: "electron",
+    platform,
+    arch,
+    checksums
   });
+
+  await rm(electronDist, { recursive: true, force: true });
+  await mkdir(electronDist, { recursive: true });
+  await extract(zipPath, { dir: electronDist });
+  await writeFile(path.join(electronPackageDir, "path.txt"), "electron.exe");
+
+  if (!existsSync(electronExecutable)) {
+    throw new Error(`electron.exe was not found at ${electronExecutable}. Electron download did not complete.`);
+  }
+  return { electronDist, electronExecutable };
 }
 
 function runNpm(args) {
