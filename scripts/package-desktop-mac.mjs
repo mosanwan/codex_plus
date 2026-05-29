@@ -129,7 +129,6 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
     return electronApp;
   }
 
-  const extract = require(require.resolve("extract-zip", { paths: [electronPackageDir, repoRoot] }));
   const electronPackage = JSON.parse(
     await readFile(path.join(electronPackageDir, "package.json"), "utf8")
   );
@@ -137,7 +136,7 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
 
   await rm(electronDist, { recursive: true, force: true });
   await mkdir(electronDist, { recursive: true });
-  await extract(zipPath, { dir: electronDist });
+  extractElectronZip(zipPath, electronDist);
   await writeFile(
     path.join(electronPackageDir, "path.txt"),
     "Electron.app/Contents/MacOS/Electron"
@@ -160,6 +159,10 @@ async function downloadElectronZip(electronVersion, platform, arch) {
 
 function curlCommand() {
   return process.platform === "win32" ? "curl.exe" : "curl";
+}
+
+function extractElectronZip(zipPath, destinationDir) {
+  run("unzip", ["-q", zipPath, "-d", destinationDir]);
 }
 
 async function writeJson(filePath, value) {

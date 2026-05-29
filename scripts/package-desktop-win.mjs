@@ -112,7 +112,6 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
     return { electronDist, electronExecutable };
   }
 
-  const extract = require(require.resolve("extract-zip", { paths: [electronPackageDir, repoRoot] }));
   const electronPackage = JSON.parse(
     await readFile(path.join(electronPackageDir, "package.json"), "utf8")
   );
@@ -120,7 +119,7 @@ async function ensureElectronBinary(electronPackageDir, platform, arch) {
 
   await rm(electronDist, { recursive: true, force: true });
   await mkdir(electronDist, { recursive: true });
-  await extract(zipPath, { dir: electronDist });
+  extractElectronZip(zipPath, electronDist);
   await writeFile(path.join(electronPackageDir, "path.txt"), "electron.exe");
 
   if (!existsSync(electronExecutable)) {
@@ -140,6 +139,17 @@ async function downloadElectronZip(electronVersion, platform, arch) {
 
 function curlCommand() {
   return process.platform === "win32" ? "curl.exe" : "curl";
+}
+
+function extractElectronZip(zipPath, destinationDir) {
+  run("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `Expand-Archive -LiteralPath ${psQuote(zipPath)} -DestinationPath ${psQuote(destinationDir)} -Force`
+  ]);
 }
 
 function runNpm(args) {
