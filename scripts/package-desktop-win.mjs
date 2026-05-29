@@ -43,7 +43,7 @@ const electronPackageDir = path.dirname(electronPackageJson);
 const electronDist = path.join(electronPackageDir, "dist");
 const electronExecutable = path.join(electronDist, "electron.exe");
 if (!existsSync(electronExecutable)) {
-  run(process.execPath, [path.join(electronPackageDir, "install.js")]);
+  installElectronBinary(electronPackageDir, targetArch);
 }
 if (!existsSync(electronExecutable)) {
   throw new Error(`electron.exe was not found at ${electronExecutable}. Electron install did not complete.`);
@@ -105,6 +105,25 @@ function run(command, args) {
   execFileSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit"
+  });
+}
+
+function installElectronBinary(electronPackageDir, arch) {
+  runWithEnv(process.execPath, [path.join(electronPackageDir, "install.js")], {
+    ELECTRON_SKIP_BINARY_DOWNLOAD: "",
+    npm_config_platform: "win32",
+    npm_config_arch: arch
+  });
+}
+
+function runWithEnv(command, args, envPatch) {
+  execFileSync(command, args, {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      ...envPatch
+    }
   });
 }
 

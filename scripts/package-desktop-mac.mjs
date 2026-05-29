@@ -41,7 +41,10 @@ run("npm", ["--workspace", "@codep/desktop", "run", "build"]);
 
 const electronApp = path.join(repoRoot, "node_modules/electron/dist/Electron.app");
 if (!existsSync(electronApp)) {
-  throw new Error(`Electron.app was not found at ${electronApp}. Run npm ci on macOS first.`);
+  installElectronBinary("darwin", targetArch);
+}
+if (!existsSync(electronApp)) {
+  throw new Error(`Electron.app was not found at ${electronApp}. Electron install did not complete.`);
 }
 
 await rm(stagingDir, { recursive: true, force: true });
@@ -115,6 +118,23 @@ function run(command, args) {
   execFileSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit"
+  });
+}
+
+function installElectronBinary(platform, arch) {
+  const installScript = path.join(repoRoot, "node_modules/electron/install.js");
+  if (!existsSync(installScript)) {
+    throw new Error(`Electron install script was not found at ${installScript}. Run npm ci first.`);
+  }
+  execFileSync(process.execPath, [installScript], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "",
+      npm_config_platform: platform,
+      npm_config_arch: arch
+    }
   });
 }
 
