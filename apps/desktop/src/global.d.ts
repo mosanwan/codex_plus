@@ -134,6 +134,7 @@ declare global {
       chooseAttachmentFiles(): Promise<ComposerAttachment[]>;
       chooseNotificationSoundFile(): Promise<NotificationSoundFile | null>;
       checkForUpdates(): Promise<DesktopUpdateInfo>;
+      openExternalUrl(url: string): Promise<void>;
       openUpdateDownload(url: string): Promise<void>;
       revealDownloadedUpdate(path: string): Promise<void>;
       searchWorkspaceFiles(options: {

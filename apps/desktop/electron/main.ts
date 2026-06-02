@@ -251,6 +251,13 @@ function createWindow(): void {
     logDesktopLifecycle(`render-process-gone ${details.reason} ${details.exitCode}`);
   });
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpUrl(url)) {
+      void openExternalHttpUrl(url);
+    }
+    return { action: "deny" };
+  });
+
   mainWindow.on("unresponsive", () => {
     logDesktopLifecycle("window-unresponsive");
   });
@@ -606,10 +613,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("notification:sound:choose", async () => chooseNotificationSoundFile());
   ipcMain.handle("app:update:check", async () => checkForDesktopUpdate());
   ipcMain.handle("app:update:open-download", async (_event, url: string) => {
-    if (!isHttpUrl(url)) {
-      throw new Error("Invalid update download URL.");
-    }
-    await shell.openExternal(url);
+    await openExternalHttpUrl(url, "Invalid update download URL.");
+  });
+  ipcMain.handle("app:open-external-url", async (_event, url: string) => {
+    await openExternalHttpUrl(url);
   });
   ipcMain.handle("app:update:reveal-download", async (_event, filePath: string) => {
     if (!filePath || !path.isAbsolute(filePath)) {
@@ -1239,6 +1246,16 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+async function openExternalHttpUrl(
+  url: string,
+  invalidMessage = "Invalid external URL."
+): Promise<void> {
+  if (!isHttpUrl(url)) {
+    throw new Error(invalidMessage);
+  }
+  await shell.openExternal(url);
 }
 
 function sendCodexEvent(event: CodexAdapterEvent): void {

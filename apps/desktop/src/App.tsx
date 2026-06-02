@@ -97,12 +97,6 @@ interface ComposerAttachment {
   previewDataUrl?: string;
 }
 
-interface QueuedRemoteTurn {
-  text: string;
-  attachments: ComposerAttachment[];
-  session: SessionView;
-}
-
 interface ClipboardAttachmentResult {
   attachments: ComposerAttachment[];
   formats: string[];
@@ -961,7 +955,6 @@ export function App() {
   const sessionsLoadingCountRef = useRef(0);
   const hiddenSessionIdsRef = useRef<Set<string>>(hiddenSessionIds);
   const runningTurnsBySessionRef = useRef<Record<string, string>>(runningTurnsBySession);
-  const queuedRemoteTurnsRef = useRef<Record<string, QueuedRemoteTurn[]>>({});
   const turnStartedAtBySessionRef = useRef<Record<string, number>>({});
   const turnAssistantTextRef = useRef<
     Record<string, { turnId: string; text: string; createdAt: number }>
@@ -1215,49 +1208,6 @@ export function App() {
     });
   }
 
-  function enqueueRemoteTurn(threadId: string, turn: QueuedRemoteTurn) {
-    const queue = queuedRemoteTurnsRef.current[threadId] ?? [];
-    queuedRemoteTurnsRef.current = {
-      ...queuedRemoteTurnsRef.current,
-      [threadId]: [...queue, turn]
-    };
-    setStatus("Mobile message queued until the current turn completes.");
-  }
-
-  function shiftQueuedRemoteTurn(threadId: string): QueuedRemoteTurn | null {
-    const queue = queuedRemoteTurnsRef.current[threadId] ?? [];
-    const [nextTurn, ...remaining] = queue;
-    if (!nextTurn) {
-      return null;
-    }
-
-    if (remaining.length > 0) {
-      queuedRemoteTurnsRef.current = {
-        ...queuedRemoteTurnsRef.current,
-        [threadId]: remaining
-      };
-    } else {
-      const nextQueues = { ...queuedRemoteTurnsRef.current };
-      delete nextQueues[threadId];
-      queuedRemoteTurnsRef.current = nextQueues;
-    }
-    return nextTurn;
-  }
-
-  function sendNextQueuedRemoteTurn(threadId: string) {
-    const queuedTurn = shiftQueuedRemoteTurn(threadId);
-    if (!queuedTurn) {
-      return;
-    }
-    setStatus("Sending queued mobile message.");
-    void sendTurnRequest(
-      queuedTurn.text,
-      queuedTurn.attachments,
-      queuedTurn.session,
-      { clearLocalComposer: false }
-    );
-  }
-
   function updateTranscriptForActiveThread(
     threadId: string | null | undefined,
     updater: TranscriptUpdater
@@ -1462,7 +1412,6 @@ export function App() {
         if (isActiveEventThread(event.threadId)) {
           setStatus("Turn completed.");
         }
-        sendNextQueuedRemoteTurn(event.threadId);
       }
     });
   }, [
@@ -3000,14 +2949,6 @@ export function App() {
           ? await desktopApi.saveRemoteAttachments(remoteImages)
           : [];
       const savedAttachments = [...savedImages, ...remoteMentions];
-      if (runningTurnsBySessionRef.current[targetSession.session.threadId]) {
-        enqueueRemoteTurn(targetSession.session.threadId, {
-          text,
-          attachments: savedAttachments,
-          session: targetSession.session
-        });
-        return;
-      }
       await sendTurnRequest(text, savedAttachments, targetSession.session, {
         clearLocalComposer: false
       });
@@ -4324,6 +4265,7 @@ export function App() {
                     entry={entry}
                     key={entry.id}
                     language={language}
+                    onOpenExternalUrl={url => void desktopApi?.openExternalUrl(url)}
                     onPreviewFile={openFilePreview}
                   />
                 ))}
@@ -6691,10 +6633,12 @@ function ComposerCompletionMenu({
 const TimelineEntry = memo(function TimelineEntry({
   entry,
   language,
+  onOpenExternalUrl,
   onPreviewFile
 }: {
   entry: TranscriptEntry;
   language: UILanguage;
+  onOpenExternalUrl: (url: string) => void;
   onPreviewFile: (path: string, label: string) => void;
 }) {
   return (
@@ -6705,7 +6649,11 @@ const TimelineEntry = memo(function TimelineEntry({
           <strong>{roleLabel(entry.role, language)}</strong>
           {entry.meta ? <code>{entry.meta}</code> : null}
         </div>
-        <MarkdownContent text={entry.text || "..."} onPreviewFile={onPreviewFile} />
+        <MarkdownContent
+          text={entry.text || "..."}
+          onOpenExternalUrl={onOpenExternalUrl}
+          onPreviewFile={onPreviewFile}
+        />
       </div>
     </article>
   );
@@ -6713,9 +6661,11 @@ const TimelineEntry = memo(function TimelineEntry({
 
 const MarkdownContent = memo(function MarkdownContent({
   text,
+  onOpenExternalUrl,
   onPreviewFile
 }: {
   text: string;
+  onOpenExternalUrl: (url: string) => void;
   onPreviewFile: (path: string, label: string) => void;
 }) {
   const components = useMemo<Components>(
@@ -6727,7 +6677,18 @@ const MarkdownContent = memo(function MarkdownContent({
         const previewPath = normalizePreviewHref(hrefText);
         if (!previewPath) {
           return (
-            <a href={href} rel="noreferrer" target="_blank" {...rest}>
+            <a
+              href={href}
+              rel="noreferrer"
+              target="_blank"
+              onClick={event => {
+                if (hrefText && isHttpHref(hrefText)) {
+                  event.preventDefault();
+                  onOpenExternalUrl(hrefText);
+                }
+              }}
+              {...rest}
+            >
               {children}
             </a>
           );
@@ -6744,7 +6705,7 @@ const MarkdownContent = memo(function MarkdownContent({
         );
       }
     }),
-    [onPreviewFile]
+    [onOpenExternalUrl, onPreviewFile]
   );
 
   return (
@@ -6807,6 +6768,15 @@ function normalizePreviewHref(value: string): string {
     return decodeURIComponent(trimmed).trim();
   } catch {
     return trimmed;
+  }
+}
+
+function isHttpHref(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
   }
 }
 

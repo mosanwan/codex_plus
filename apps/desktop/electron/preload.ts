@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld("codexApp", {
   chooseAttachmentFiles: () => ipcRenderer.invoke("attachment:choose"),
   chooseNotificationSoundFile: () => ipcRenderer.invoke("notification:sound:choose"),
   checkForUpdates: (): Promise<DesktopUpdateInfo> => ipcRenderer.invoke("app:update:check"),
+  openExternalUrl: (url: string) => ipcRenderer.invoke("app:open-external-url", url),
   openUpdateDownload: (url: string) => ipcRenderer.invoke("app:update:open-download", url),
   revealDownloadedUpdate: (path: string) => ipcRenderer.invoke("app:update:reveal-download", path),
   searchWorkspaceFiles: (options: { cwd: string; query?: string; limit?: number }) =>
