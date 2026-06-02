@@ -175,6 +175,9 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
             ) {
                 connectRelay()
             }
+            if (settings.backgroundLastEventId < settings.lastEventId) {
+                preferences.saveBackgroundLastEventId(settings.lastEventId)
+            }
         }
         retryJob = viewModelScope.launch {
             while (true) {
@@ -897,6 +900,7 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
         }
         _state.update { it.copy(lastEventId = maxOf(it.lastEventId, event.id)) }
         preferences.saveLastEventId(_state.value.lastEventId)
+        preferences.saveBackgroundLastEventId(_state.value.lastEventId)
         publish(
             "event.ack",
             buildJsonObject { put("last_event_id", _state.value.lastEventId) }

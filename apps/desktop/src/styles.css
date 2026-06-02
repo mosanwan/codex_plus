@@ -1980,6 +1980,24 @@ textarea:focus-visible {
   text-underline-offset: 2px;
 }
 
+.markdownPreviewLink {
+  display: inline;
+  border: 0;
+  padding: 0;
+  color: var(--color-focus);
+  background: transparent;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.markdownPreviewLink:hover {
+  color: var(--color-link-active);
+}
+
 .markdownContent code {
   border-radius: var(--radius-xs);
   padding: 1px 4px;
@@ -2735,6 +2753,85 @@ textarea:focus-visible {
 .taskModal {
   width: min(880px, 100%);
   height: min(820px, calc(100vh - 48px));
+}
+
+.filePreviewModal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(980px, 100%);
+  height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-canvas);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 28%);
+}
+
+.filePreviewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  border-bottom: 1px solid var(--color-hairline);
+  padding: var(--space-lg);
+}
+
+.filePreviewHeader span,
+.filePreviewHeader p {
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.filePreviewHeader h3 {
+  max-width: 760px;
+  margin: 2px 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filePreviewHeader p {
+  margin: 0;
+}
+
+.filePreviewNotice {
+  border-bottom: 1px solid var(--color-hairline);
+  padding: var(--space-sm) var(--space-lg);
+  color: var(--color-muted);
+  background: var(--color-surface-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filePreviewBody {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-lg);
+  background: var(--color-surface-soft);
+}
+
+.filePreviewBody pre,
+.filePreviewStatus {
+  min-height: 100%;
+  margin: 0;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  color: var(--color-body);
+  background: var(--color-canvas);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.filePreviewBody pre {
+  width: max-content;
+  min-width: 100%;
+  white-space: pre;
 }
 
 .taskEditorHeaderActions {

@@ -93,6 +93,7 @@ class RelayBackgroundService : Service() {
                     if (currentGeneration != generation) return
                     scope.launch {
                         reconnectAttempt = 0
+                        publishEventAck()
                         publishResumeEvents()
                     }
                 }
@@ -144,7 +145,10 @@ class RelayBackgroundService : Service() {
     }
 
     private suspend fun handleRelayEvent(event: RelayEventRecord) {
-        if (event.id <= lastEventId) return
+        if (event.id <= lastEventId) {
+            publishEventAck()
+            return
+        }
         if (
             event.type == "turn.completed" &&
             preferences.read().notificationsEnabled &&
@@ -154,7 +158,7 @@ class RelayBackgroundService : Service() {
         }
         lastEventId = maxOf(lastEventId, event.id)
         preferences.saveBackgroundLastEventId(lastEventId)
-        publish("event.ack", buildJsonObject { put("last_event_id", lastEventId) })
+        publishEventAck()
     }
 
     private fun publishResumeEvents() {
@@ -165,6 +169,11 @@ class RelayBackgroundService : Service() {
                 put("types", buildJsonArray { add("turn.completed") })
             }
         )
+    }
+
+    private fun publishEventAck() {
+        if (lastEventId <= 0) return
+        publish("event.ack", buildJsonObject { put("last_event_id", lastEventId) })
     }
 
     private fun publish(type: String, payload: JsonObject = buildJsonObject { }) {

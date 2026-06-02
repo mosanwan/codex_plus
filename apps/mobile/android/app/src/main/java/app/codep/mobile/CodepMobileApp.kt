@@ -13,6 +13,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
@@ -114,6 +115,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
 import java.text.SimpleDateFormat
@@ -477,6 +479,7 @@ fun CodepMobileApp(viewModel: MobileViewModel) {
         state.filePreviewDialog?.let { dialog ->
             FilePreviewDialogView(
                 dialog = dialog,
+                onPreviewFile = viewModel::requestFilePreview,
                 onClose = viewModel::closeFilePreview
             )
         }
@@ -553,12 +556,21 @@ private fun VersionMismatchDialog(
 }
 
 @Composable
-private fun FilePreviewDialogView(dialog: FilePreviewDialog, onClose: () -> Unit) {
-    Dialog(onDismissRequest = onClose) {
+private fun FilePreviewDialogView(
+    dialog: FilePreviewDialog,
+    onPreviewFile: (String, String) -> Unit,
+    onClose: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 620.dp)
+                .fillMaxWidth(0.94f)
+                .heightIn(min = 220.dp, max = 560.dp)
+                .navigationBarsPadding()
+                .statusBarsPadding()
                 .border(BorderStroke(1.dp, Hairline), Radius)
                 .background(Canvas, Radius)
                 .padding(14.dp),
@@ -610,25 +622,75 @@ private fun FilePreviewDialogView(dialog: FilePreviewDialog, onClose: () -> Unit
             when {
                 dialog.loading -> PreviewStatusText(if (IsChinese) "正在加载预览..." else "Loading preview...")
                 dialog.error != null -> PreviewStatusText(dialog.error)
-                else -> Text(
-                    text = dialog.preview?.content.orEmpty(),
-                    color = Body,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 180.dp, max = 500.dp)
-                        .border(BorderStroke(1.dp, Hairline), RadiusSmall)
-                        .background(SurfaceSoft, RadiusSmall)
-                        .verticalScroll(rememberScrollState())
-                        .horizontalScroll(rememberScrollState())
-                        .padding(10.dp),
-                    softWrap = false
+                dialog.preview?.isMarkdown == true -> MarkdownFilePreview(
+                    content = dialog.preview.content,
+                    onPreviewFile = onPreviewFile
                 )
+                else -> SourceFilePreview(content = dialog.preview?.content.orEmpty())
             }
         }
     }
+}
+
+@Composable
+private fun ColumnScope.MarkdownFilePreview(content: String, onPreviewFile: (String, String) -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f, fill = false)
+            .heightIn(min = 180.dp)
+            .border(BorderStroke(1.dp, Hairline), RadiusSmall)
+            .background(SurfaceSoft, RadiusSmall)
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp)
+    ) {
+        SelectionContainer {
+            MarkdownContent(
+                text = content.ifBlank { " " },
+                userMessage = false,
+                eventMessage = false,
+                onPreviewFile = onPreviewFile
+            )
+        }
+    }
+}
+
+@Composable
+private fun ColumnScope.SourceFilePreview(content: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f, fill = false)
+            .heightIn(min = 180.dp)
+            .border(BorderStroke(1.dp, Hairline), RadiusSmall)
+            .background(SurfaceSoft, RadiusSmall)
+            .verticalScroll(rememberScrollState())
+            .horizontalScroll(rememberScrollState())
+            .padding(10.dp)
+    ) {
+        SelectionContainer {
+            Text(
+                text = content,
+                color = Body,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth(),
+                softWrap = false
+            )
+        }
+    }
+}
+
+private val WorkspaceFilePreview.isMarkdown: Boolean
+    get() = listOf(name, relativePath, path).any(::isMarkdownPath)
+
+private fun isMarkdownPath(value: String): Boolean {
+    val normalized = value.substringBefore('?').substringBefore('#').lowercase()
+    return normalized.endsWith(".md") ||
+        normalized.endsWith(".markdown") ||
+        normalized.endsWith(".mdown") ||
+        normalized.endsWith(".mkd")
 }
 
 @Composable
@@ -1097,17 +1159,21 @@ private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> U
                     maxLines = 1
                 )
             }
-            MarkdownContent(
-                text = message.text.ifBlank { "(attachment)" },
-                userMessage = isUser,
-                eventMessage = isEvent,
-                onPreviewFile = onPreviewFile
-            )
-            if (message.attachments.isNotEmpty()) {
-                MessageAttachmentList(
-                    attachments = message.attachments,
-                    userMessage = isUser
-                )
+            SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MarkdownContent(
+                        text = message.text.ifBlank { "(attachment)" },
+                        userMessage = isUser,
+                        eventMessage = isEvent,
+                        onPreviewFile = onPreviewFile
+                    )
+                    if (message.attachments.isNotEmpty()) {
+                        MessageAttachmentList(
+                            attachments = message.attachments,
+                            userMessage = isUser
+                        )
+                    }
+                }
             }
         }
     }

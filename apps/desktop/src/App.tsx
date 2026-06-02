@@ -37,7 +37,12 @@ import type {
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
-import type { DesktopUpdateInfo, PeriodicTask, PeriodicTaskInput } from "./global";
+import type {
+  DesktopUpdateInfo,
+  PeriodicTask,
+  PeriodicTaskInput,
+  WorkspaceFilePreview
+} from "./global";
 import defaultNotificationSoundUrl from "../zelda-chest.wav?url";
 import desktopPackage from "../package.json";
 
@@ -101,6 +106,15 @@ interface QueuedRemoteTurn {
 interface ClipboardAttachmentResult {
   attachments: ComposerAttachment[];
   formats: string[];
+}
+
+interface FilePreviewState {
+  label: string;
+  path: string;
+  workspace: string;
+  loading: boolean;
+  preview?: WorkspaceFilePreview;
+  error?: string;
 }
 
 type RemoteAttachmentInput =
@@ -407,6 +421,11 @@ const UI_TEXT = {
     taskSaved: "Automation saved.",
     taskDeleted: "Automation deleted.",
     taskStarted: "Automation queued.",
+    previewFile: "Preview file",
+    closeFilePreview: "Close file preview",
+    previewLoading: "Loading preview...",
+    previewTruncated: "Preview truncated",
+    previewUnavailable: "Could not preview this file.",
     appearance: "Appearance",
     appearanceIntro: "Choose the theme and language for desktop UI surfaces.",
     theme: "Theme",
@@ -610,6 +629,11 @@ const UI_TEXT = {
     taskSaved: "自动任务已保存。",
     taskDeleted: "自动任务已删除。",
     taskStarted: "自动任务已排队。",
+    previewFile: "预览文件",
+    closeFilePreview: "关闭文件预览",
+    previewLoading: "正在加载预览...",
+    previewTruncated: "预览已截断",
+    previewUnavailable: "无法预览这个文件。",
     appearance: "外观",
     appearanceIntro: "选择桌面端界面的主题和语言。",
     theme: "主题",
@@ -911,6 +935,7 @@ export function App() {
   );
   const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
   const [isPeriodicTaskModalOpen, setIsPeriodicTaskModalOpen] = useState(false);
+  const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(
     () => window.localStorage.getItem(UPDATE_DISMISSED_STORAGE_KEY) ?? ""
@@ -2799,6 +2824,43 @@ export function App() {
     }
   }
 
+  async function openFilePreview(path: string, label: string) {
+    const requestedPath = normalizePreviewHref(path);
+    const workspace = activeWorkspaceRef.current;
+    if (!desktopApi || !workspace || !requestedPath) {
+      setStatus(t("previewUnavailable"));
+      return;
+    }
+
+    setFilePreview({
+      label: label || requestedPath,
+      path: requestedPath,
+      workspace,
+      loading: true
+    });
+    try {
+      const preview = await desktopApi.previewWorkspaceFile({
+        cwd: workspace,
+        path: requestedPath
+      });
+      setFilePreview({
+        label: label || preview.relativePath || requestedPath,
+        path: requestedPath,
+        workspace,
+        loading: false,
+        preview
+      });
+    } catch (error) {
+      setFilePreview({
+        label: label || requestedPath,
+        path: requestedPath,
+        workspace,
+        loading: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   function addAttachments(nextAttachments: ComposerAttachment[]) {
     setAttachments(previous => {
       const existingPaths = new Set(previous.map(item => item.path));
@@ -4258,7 +4320,12 @@ export function App() {
                   </div>
                 ) : null}
                 {visibleTranscript.map(entry => (
-                  <TimelineEntry entry={entry} key={entry.id} language={language} />
+                  <TimelineEntry
+                    entry={entry}
+                    key={entry.id}
+                    language={language}
+                    onPreviewFile={openFilePreview}
+                  />
                 ))}
                 {isTurnRunning ? (
                   <div className="timelineItem workingItem" aria-live="polite">
@@ -4507,6 +4574,14 @@ export function App() {
           onOpenSession={openPeriodicTaskSession}
           onRunNow={runPeriodicTaskNow}
           onToggleEnabled={togglePeriodicTask}
+        />
+      ) : null}
+
+      {filePreview ? (
+        <FilePreviewModal
+          language={language}
+          previewState={filePreview}
+          onClose={() => setFilePreview(null)}
         />
       ) : null}
 
@@ -5337,6 +5412,65 @@ function SessionTreeRow({
   );
 }
 
+function FilePreviewModal({
+  language,
+  previewState,
+  onClose
+}: {
+  language: UILanguage;
+  previewState: FilePreviewState;
+  onClose: () => void;
+}) {
+  const t = (key: UIMessageKey, values?: Record<string, string | number>) =>
+    textFor(language, key, values);
+  const title =
+    previewState.preview?.relativePath ||
+    previewState.label ||
+    previewState.path;
+  const meta = previewState.preview
+    ? `${formatBytes(previewState.preview.size)} · ${previewState.workspace}`
+    : previewState.workspace;
+
+  return (
+    <div className="modalBackdrop" role="presentation">
+      <section
+        aria-label={t("previewFile")}
+        aria-modal="true"
+        className="filePreviewModal"
+        role="dialog"
+      >
+        <div className="filePreviewHeader">
+          <div>
+            <span>{t("previewFile")}</span>
+            <h3 title={title}>{title}</h3>
+            <p>{meta}</p>
+          </div>
+          <button
+            aria-label={t("closeFilePreview")}
+            className="iconOnlyButton"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {previewState.preview?.truncated ? (
+          <div className="filePreviewNotice">{t("previewTruncated")}</div>
+        ) : null}
+        <div className="filePreviewBody">
+          {previewState.loading ? (
+            <p className="filePreviewStatus">{t("previewLoading")}</p>
+          ) : previewState.error ? (
+            <p className="filePreviewStatus">{previewState.error}</p>
+          ) : (
+            <pre>{previewState.preview?.content || ""}</pre>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SettingsModal({
   model,
   modelEffort,
@@ -6144,6 +6278,23 @@ function formatTaskTime(value: number): string {
   return new Date(value).toLocaleString();
 }
 
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) {
+    return "0 B";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const units = ["KB", "MB", "GB"] as const;
+  let size = value / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[unitIndex]}`;
+}
+
 function codexPermissionOptions(value: PermissionMode): {
   approvalPolicy: string;
   approvalsReviewer: string;
@@ -6539,10 +6690,12 @@ function ComposerCompletionMenu({
 
 const TimelineEntry = memo(function TimelineEntry({
   entry,
-  language
+  language,
+  onPreviewFile
 }: {
   entry: TranscriptEntry;
   language: UILanguage;
+  onPreviewFile: (path: string, label: string) => void;
 }) {
   return (
     <article className="timelineItem" data-role={entry.role}>
@@ -6552,16 +6705,51 @@ const TimelineEntry = memo(function TimelineEntry({
           <strong>{roleLabel(entry.role, language)}</strong>
           {entry.meta ? <code>{entry.meta}</code> : null}
         </div>
-        <MarkdownContent text={entry.text || "..."} />
+        <MarkdownContent text={entry.text || "..."} onPreviewFile={onPreviewFile} />
       </div>
     </article>
   );
 });
 
-const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
+const MarkdownContent = memo(function MarkdownContent({
+  text,
+  onPreviewFile
+}: {
+  text: string;
+  onPreviewFile: (path: string, label: string) => void;
+}) {
+  const components = useMemo<Components>(
+    () => ({
+      ...markdownComponents,
+      a(props) {
+        const { href, children, ...rest } = props;
+        const hrefText = typeof href === "string" ? href : "";
+        const previewPath = normalizePreviewHref(hrefText);
+        if (!previewPath) {
+          return (
+            <a href={href} rel="noreferrer" target="_blank" {...rest}>
+              {children}
+            </a>
+          );
+        }
+        const label = markdownNodeText(children) || previewPath;
+        return (
+          <button
+            className="markdownPreviewLink"
+            type="button"
+            onClick={() => onPreviewFile(previewPath, label)}
+          >
+            {children}
+          </button>
+        );
+      }
+    }),
+    [onPreviewFile]
+  );
+
   return (
     <div className="markdownContent">
-      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>
         {text}
       </ReactMarkdown>
     </div>
@@ -6589,6 +6777,38 @@ const markdownComponents: Components = {
     );
   }
 };
+
+function markdownNodeText(value: ReactNode): string {
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(markdownNodeText).join("").trim();
+  }
+  return "";
+}
+
+function normalizePreviewHref(value: string): string {
+  const trimmed = value.split("#")[0]?.split("?")[0]?.trim() ?? "";
+  if (!trimmed) {
+    return "";
+  }
+  if (/^file:\/\//i.test(trimmed)) {
+    try {
+      return decodeURIComponent(new URL(trimmed).pathname);
+    } catch {
+      return "";
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return "";
+  }
+  try {
+    return decodeURIComponent(trimmed).trim();
+  } catch {
+    return trimmed;
+  }
+}
 
 function renderDiffLines(text: string): ReactNode[] {
   return text.replace(/\n$/, "").split("\n").map((line, index) => {
