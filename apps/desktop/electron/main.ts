@@ -24,6 +24,8 @@ import {
   type JsonObject,
   type ReasoningEffort,
   type SkillMetadata,
+  type Thread,
+  type ThreadListResponse,
   type UserInput
 } from "@codep/codex-adapter";
 
@@ -193,6 +195,18 @@ interface UpdateManifest {
 
 const DEFAULT_GITHUB_RELEASE_API_URL =
   "https://api.github.com/repos/mosanwan/codex_plus/releases/latest";
+const CODEX_HTTPS_PROVIDER_ID = "openai-http";
+const CODEX_HTTPS_PROVIDER_CONFIG: JsonObject = {
+  model_providers: {
+    [CODEX_HTTPS_PROVIDER_ID]: {
+      name: "OpenAI HTTPS",
+      base_url: "https://chatgpt.com/backend-api/codex",
+      wire_api: "responses",
+      requires_openai_auth: true,
+      supports_websockets: false
+    }
+  }
+};
 const UPDATE_CHECK_TIMEOUT_MS = 8000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 120000;
 const DESKTOP_ICON_PATH = path.resolve(__dirname, "..", "assets", "codex-plus.png");
@@ -690,7 +704,7 @@ function registerIpcHandlers(): void {
         effort?: ReasoningEffort | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandbox?: string;
       }
     ) => {
@@ -700,12 +714,14 @@ function registerIpcHandlers(): void {
       return adapter.startThread({
         cwd: options.cwd,
         model: options.model,
+        modelProvider: CODEX_HTTPS_PROVIDER_ID,
         serviceTier: options.serviceTier,
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
-        sandbox: options.sandbox
+        permissions: options.permissions,
+        sandbox: options.sandbox,
+        config: CODEX_HTTPS_PROVIDER_CONFIG
       });
     }
   );
@@ -714,13 +730,14 @@ function registerIpcHandlers(): void {
     if (!adapter) {
       throw new Error("Codex adapter is not connected");
     }
-    return adapter.listThreads({
+    const response = await adapter.listThreads({
       cwd: options.cwd,
       limit: 50,
       sortKey: "updated_at",
       sortDirection: "desc",
       archived: false
     });
+    return recoverMissingDesktopThreads(adapter, response, options.cwd);
   });
 
   ipcMain.handle(
@@ -772,7 +789,7 @@ function registerIpcHandlers(): void {
         effort?: ReasoningEffort | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandbox?: string;
       }
     ) => {
@@ -782,12 +799,14 @@ function registerIpcHandlers(): void {
       return adapter.resumeThread(options.threadId, {
         cwd: options.cwd,
         model: options.model,
+        modelProvider: CODEX_HTTPS_PROVIDER_ID,
         serviceTier: options.serviceTier,
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
+        permissions: options.permissions,
         sandbox: options.sandbox,
+        config: CODEX_HTTPS_PROVIDER_CONFIG,
         excludeTurns: false
       });
     }
@@ -806,7 +825,7 @@ function registerIpcHandlers(): void {
         effort?: ReasoningEffort | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandboxPolicy?: JsonObject;
       }
     ) => {
@@ -820,7 +839,7 @@ function registerIpcHandlers(): void {
           effort: options.effort,
           approvalPolicy: options.approvalPolicy,
           approvalsReviewer: options.approvalsReviewer,
-          permissionProfile: options.permissionProfile,
+          permissions: options.permissions,
           sandboxPolicy: options.sandboxPolicy
         });
       }
@@ -830,7 +849,7 @@ function registerIpcHandlers(): void {
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
+        permissions: options.permissions,
         sandboxPolicy: options.sandboxPolicy
       });
     }
@@ -1262,6 +1281,140 @@ function sendCodexEvent(event: CodexAdapterEvent): void {
   mainWindow?.webContents.send("codex:event", event);
 }
 
+interface DesktopRolloutCandidate {
+  threadId: string;
+  cwd: string;
+}
+
+async function recoverMissingDesktopThreads(
+  codex: CodexAdapter,
+  response: ThreadListResponse,
+  cwd: string
+): Promise<ThreadListResponse> {
+  const codexHome = initializeResponse?.codexHome ?? path.join(homedir(), ".codex");
+  const candidates = await findDesktopRolloutCandidates(codexHome, cwd).catch(() => []);
+  const knownIds = new Set(response.data.map(thread => thread.id));
+  const recovered: Thread[] = [];
+
+  for (const candidate of candidates) {
+    if (knownIds.has(candidate.threadId)) {
+      continue;
+    }
+    try {
+      const readResponse = asRecord(await codex.readThread(candidate.threadId, false));
+      const thread = asRecord(readResponse.thread) as unknown as Thread;
+      if (
+        thread.id === candidate.threadId &&
+        comparableWorkspacePath(thread.cwd || candidate.cwd) === comparableWorkspacePath(cwd)
+      ) {
+        knownIds.add(thread.id);
+        recovered.push(thread);
+      }
+    } catch {
+      // Ignore incomplete or stale rollout files that Codex cannot read.
+    }
+  }
+
+  if (recovered.length === 0) {
+    return response;
+  }
+
+  return {
+    ...response,
+    data: [...response.data, ...recovered]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 50)
+  };
+}
+
+async function findDesktopRolloutCandidates(
+  codexHome: string,
+  cwd: string
+): Promise<DesktopRolloutCandidate[]> {
+  const sessionRoot = path.join(codexHome, "sessions");
+  const rolloutPaths = await collectRolloutPaths(sessionRoot);
+  const expectedCwd = comparableWorkspacePath(cwd);
+  const candidates: DesktopRolloutCandidate[] = [];
+
+  for (const rolloutPath of rolloutPaths) {
+    const metadata = await readRolloutMetadata(rolloutPath).catch(() => null);
+    if (
+      metadata &&
+      metadata.originator === "codep-desktop" &&
+      comparableWorkspacePath(metadata.cwd) === expectedCwd
+    ) {
+      candidates.push({ threadId: metadata.threadId, cwd: metadata.cwd });
+    }
+  }
+
+  return candidates;
+}
+
+async function collectRolloutPaths(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(
+    entries.map(async entry => {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        return collectRolloutPaths(entryPath);
+      }
+      return entry.isFile() && entry.name.endsWith(".jsonl") ? [entryPath] : [];
+    })
+  );
+  return nested.flat();
+}
+
+async function readRolloutMetadata(rolloutPath: string): Promise<{
+  threadId: string;
+  cwd: string;
+  originator: string;
+} | null> {
+  const handle = await openFile(rolloutPath, "r");
+  try {
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    const maxBytes = 2 * 1024 * 1024;
+    while (offset < maxBytes) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes - offset));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      if (bytesRead === 0) {
+        break;
+      }
+      const chunk = buffer.subarray(0, bytesRead);
+      const newline = chunk.indexOf(0x0a);
+      chunks.push(newline >= 0 ? chunk.subarray(0, newline) : chunk);
+      offset += newline >= 0 ? newline : bytesRead;
+      if (newline >= 0) {
+        break;
+      }
+    }
+
+    const firstLine = Buffer.concat(chunks).toString("utf8").trim();
+    if (!firstLine) {
+      return null;
+    }
+    const event = asRecord(JSON.parse(firstLine));
+    if (event.type !== "session_meta") {
+      return null;
+    }
+    const payload = asRecord(event.payload);
+    const threadId = stringOrUndefined(payload.session_id) ?? stringOrUndefined(payload.id);
+    const metadataCwd = stringOrUndefined(payload.cwd);
+    const originator = stringOrUndefined(payload.originator);
+    return threadId && metadataCwd && originator
+      ? { threadId, cwd: metadataCwd, originator }
+      : null;
+  } finally {
+    await handle.close();
+  }
+}
+
+function comparableWorkspacePath(value: string): string {
+  const withoutWindowsPrefix = value.replace(/^\\\\\?\\/, "");
+  const normalized = path.resolve(withoutWindowsPrefix).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 async function ensureCodexConnected(): Promise<CodexAdapter> {
   if (!initializeResponse) {
     if (!connectPromise) {
@@ -1494,6 +1647,8 @@ async function runPeriodicTask(
 
     await codex.resumeThread(sessionId, {
       cwd: current.workspace,
+      modelProvider: CODEX_HTTPS_PROVIDER_ID,
+      config: CODEX_HTTPS_PROVIDER_CONFIG,
       ...periodicTaskPermissionOptions(current.permissionMode),
       ...periodicTaskModelOptions(current)
     }).catch(() => undefined);
@@ -1535,6 +1690,8 @@ async function ensurePeriodicTaskSession(
 
   const response = await codex.startThread({
     cwd: task.workspace,
+    modelProvider: CODEX_HTTPS_PROVIDER_ID,
+    config: CODEX_HTTPS_PROVIDER_CONFIG,
     ...periodicTaskPermissionOptions(task.permissionMode),
     ...periodicTaskModelOptions(task)
   });
@@ -1759,23 +1916,19 @@ function normalizePeriodicTask(value: unknown): PeriodicTask | null {
 function periodicTaskPermissionOptions(value: PeriodicTaskPermissionMode): {
   approvalPolicy: string;
   approvalsReviewer: string;
-  permissionProfile: string;
-  sandbox?: string;
-  sandboxPolicy?: JsonObject;
+  permissions: string;
 } {
   if (value === "full-access") {
     return {
       approvalPolicy: "never",
       approvalsReviewer: "user",
-      permissionProfile: "full-access",
-      sandbox: "danger-full-access",
-      sandboxPolicy: { type: "dangerFullAccess" }
+      permissions: ":danger-full-access"
     };
   }
   return {
     approvalPolicy: "on-request",
     approvalsReviewer: value === "auto-review" ? "auto-reviewer" : "user",
-    permissionProfile: "workspace-write"
+    permissions: ":workspace"
   };
 }
 

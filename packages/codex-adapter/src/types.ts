@@ -70,6 +70,11 @@ export interface Thread {
 export interface Turn {
   id: string;
   status: string;
+  error?: {
+    message?: string;
+    codexErrorInfo?: string;
+    additionalDetails?: unknown;
+  } | null;
   input?: unknown[];
   items?: unknown[];
 }
@@ -178,7 +183,7 @@ export interface ThreadStartOptions {
   effort?: ReasoningEffort | null;
   approvalPolicy?: string;
   approvalsReviewer?: string;
-  permissionProfile?: string;
+  permissions?: string;
   sandbox?: string;
   runtimeWorkspaceRoots?: string[];
   config?: JsonObject;
@@ -193,7 +198,7 @@ export interface ThreadResumeOptions {
   effort?: ReasoningEffort | null;
   approvalPolicy?: string;
   approvalsReviewer?: string;
-  permissionProfile?: string;
+  permissions?: string;
   sandbox?: string;
   runtimeWorkspaceRoots?: string[];
   config?: JsonObject;
@@ -219,7 +224,7 @@ export interface TurnStartOptions {
   effort?: ReasoningEffort | null;
   approvalPolicy?: string;
   approvalsReviewer?: string;
-  permissionProfile?: string;
+  permissions?: string;
   sandboxPolicy?: JsonObject;
 }
 

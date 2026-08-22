@@ -1907,8 +1907,21 @@ textarea:focus-visible {
 
 .timelineItem[data-role="approval"] .timelineMarker,
 .timelineItem[data-role="edited"] .timelineMarker,
-.timelineItem[data-role="diff"] .timelineMarker {
+.timelineItem[data-role="diff"] .timelineMarker,
+.timelineItem[data-role="error"] .timelineMarker {
   background: var(--color-danger);
+}
+
+.timelineItem[data-role="error"] .timelineContent {
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  background: var(--color-danger-soft);
+}
+
+.timelineItem[data-role="error"] .timelineMeta strong,
+.timelineItem[data-role="error"] .markdownContent {
+  color: var(--color-danger);
 }
 
 .timelineContent {

@@ -61,14 +61,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         AppVisibility.foreground = true
-        RelayBackgroundService.stop(applicationContext)
-        viewModel.connectRelay()
     }
 
     override fun onStop() {
         AppVisibility.foreground = false
-        viewModel.disconnectRelay()
-        RelayBackgroundService.start(applicationContext)
         super.onStop()
     }
 

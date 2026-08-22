@@ -46,6 +46,12 @@ export class CodexAppServerProcess {
 
     this.child = null;
 
+    if (process.platform === "win32") {
+      killWindowsProcessListeningOnPort(this.port);
+      killProcessGroup(child.pid, "SIGKILL");
+      return;
+    }
+
     await new Promise<void>(resolve => {
       const timeout = setTimeout(() => {
         killProcessGroup(child.pid, "SIGKILL");
@@ -72,15 +78,24 @@ export class CodexAppServerProcess {
 
   private async start(): Promise<void> {
     const env = runtimeEnv();
-    const child = spawn(
-      this.options.codexCommand,
-      ["app-server", "--listen", this.url],
-      {
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env
-      }
-    );
+    const args = ["app-server", "--listen", this.url];
+    const child = isWindowsCommandScript(this.options.codexCommand)
+      ? spawn(
+          process.env.ComSpec || "cmd.exe",
+          ["/d", "/s", "/c", this.options.codexCommand, ...args],
+          {
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            env,
+            windowsHide: true
+          }
+        )
+      : spawn(this.options.codexCommand, args, {
+          detached: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+          windowsHide: process.platform === "win32"
+        });
 
     this.child = child;
 
@@ -163,7 +178,13 @@ function runtimePath(...basePaths: Array<string | undefined>): string {
     ...nvmNodeBins()
   ].filter((entry): entry is string => Boolean(entry));
 
-  return Array.from(new Set(entries.flatMap(entry => entry.split(":").filter(Boolean)))).join(":");
+  return Array.from(
+    new Set(entries.flatMap(entry => entry.split(path.delimiter).filter(Boolean)))
+  ).join(path.delimiter);
+}
+
+function isWindowsCommandScript(command: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
 }
 
 function nvmNodeBins(): string[] {
@@ -231,6 +252,19 @@ function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void
     return;
   }
 
+  if (process.platform === "win32") {
+    try {
+      execFileSync(
+        "taskkill.exe",
+        ["/PID", String(pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])],
+        { stdio: "ignore", windowsHide: true }
+      );
+      return;
+    } catch {
+      // Fall back to terminating the immediate process below.
+    }
+  }
+
   try {
     process.kill(-pid, signal);
   } catch {
@@ -239,6 +273,39 @@ function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void
     } catch {
       // Process already exited.
     }
+  }
+}
+
+function killWindowsProcessListeningOnPort(port: number): void {
+  try {
+    const output = execFileSync("netstat.exe", ["-ano", "-p", "tcp"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    });
+    const processIds = new Set(
+      output
+        .split(/\r?\n/)
+        .map(line => line.trim().split(/\s+/))
+        .filter(
+          fields =>
+            fields.length >= 5 &&
+            fields[0].toUpperCase() === "TCP" &&
+            fields[1].endsWith(`:${port}`) &&
+            fields[3].toUpperCase() === "LISTENING"
+        )
+        .map(fields => Number(fields[4]))
+        .filter(processId => Number.isInteger(processId) && processId > 0)
+    );
+
+    for (const processId of processIds) {
+      execFileSync("taskkill.exe", ["/PID", String(processId), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+    }
+  } catch {
+    // The process may already be gone or netstat may be unavailable.
   }
 }
 

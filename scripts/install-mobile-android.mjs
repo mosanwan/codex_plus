@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const defaultJavaHome = resolve(homedir(), ".local/share/jdks/jdk-21");
 const defaultAndroidHome = resolve(homedir(), "Android/Sdk");
+const executableSuffix = process.platform === "win32" ? ".exe" : "";
+const javaExecutable = `java${executableSuffix}`;
+const adbExecutable = `adb${executableSuffix}`;
+const androidRoot = resolve(repoRoot, "apps/mobile/android");
+const gradleWrapper = resolve(
+  androidRoot,
+  process.platform === "win32" ? "gradlew.bat" : "gradlew"
+);
 
 const args = process.argv.slice(2);
 const targetArgIndex = args.findIndex(arg => arg === "--target" || arg === "-t");
@@ -25,7 +33,7 @@ env.PATH = [
   env.PATH
 ]
   .filter(Boolean)
-  .join(":");
+  .join(delimiter);
 
 function fail(message) {
   console.error(message);
@@ -38,6 +46,9 @@ function run(command, commandArgs, cwd = repoRoot) {
     env,
     stdio: "inherit"
   });
+  if (result.error) {
+    fail(`Failed to start ${command}: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
@@ -55,17 +66,25 @@ function output(command, commandArgs) {
   return result.stdout;
 }
 
-if (!existsSync(resolve(env.JAVA_HOME, "bin/java"))) {
+function runGradle(tasks) {
+  if (process.platform === "win32") {
+    run(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", gradleWrapper, ...tasks], androidRoot);
+    return;
+  }
+  run(gradleWrapper, tasks, androidRoot);
+}
+
+if (!existsSync(resolve(env.JAVA_HOME, "bin", javaExecutable))) {
   fail(`JDK not found at ${env.JAVA_HOME}. Set JAVA_HOME or install JDK 21 there.`);
 }
 
-if (!existsSync(resolve(env.ANDROID_HOME, "platform-tools/adb"))) {
+if (!existsSync(resolve(env.ANDROID_HOME, "platform-tools", adbExecutable))) {
   fail(
     `Android SDK not found at ${env.ANDROID_HOME}. Set ANDROID_HOME/ANDROID_SDK_ROOT.`
   );
 }
 
-const adbDevices = output("adb", ["devices"])
+const adbDevices = output(adbExecutable, ["devices"])
   .split("\n")
   .slice(1)
   .map(line => line.trim().split(/\s+/))
@@ -78,22 +97,20 @@ if (!target) {
 }
 
 console.log(`Installing mobile app to Android device ${target}`);
-run("npm", ["run", "build", "--workspace", "@codep/mobile"]);
-run("adb", [
+runGradle([":app:assembleDebug"]);
+run(adbExecutable, [
   "-s",
   target,
   "install",
   "-r",
   resolve(repoRoot, "apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk")
 ]);
-run("adb", [
+run(adbExecutable, [
   "-s",
   target,
   "shell",
-  "monkey",
-  "-p",
-  "app.codep.mobile",
-  "-c",
-  "android.intent.category.LAUNCHER",
-  "1"
+  "am",
+  "start",
+  "-n",
+  "app.codep.mobile/.MainActivity"
 ]);

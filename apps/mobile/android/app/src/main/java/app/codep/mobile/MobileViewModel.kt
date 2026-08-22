@@ -897,6 +897,9 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                     status = event.body ?: event.title ?: "Turn completed."
                 )
             }
+            if (_state.value.notificationsEnabled && !AppVisibility.foreground) {
+                notificationHelper.notifyTurnCompleted(event)
+            }
         }
         _state.update { it.copy(lastEventId = maxOf(it.lastEventId, event.id)) }
         preferences.saveLastEventId(_state.value.lastEventId)

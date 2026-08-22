@@ -163,7 +163,7 @@ declare global {
         effort?: string | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandbox?: string;
       }): Promise<ThreadStartResponse>;
       listThreads(options: { cwd: string }): Promise<ThreadListResponse>;
@@ -184,7 +184,7 @@ declare global {
         effort?: string | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandbox?: string;
       }): Promise<ThreadStartResponse>;
       startTurn(options: {
@@ -196,7 +196,7 @@ declare global {
         effort?: string | null;
         approvalPolicy?: string;
         approvalsReviewer?: string;
-        permissionProfile?: string;
+        permissions?: string;
         sandboxPolicy?: JsonObject;
       }): Promise<TurnStartResponse>;
       interruptTurn(options: {

@@ -90,6 +90,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -117,6 +118,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.yield
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -930,6 +932,7 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
     var pendingHistoryOffset by remember { mutableStateOf(0) }
     var pendingHistoryAnchor by remember { mutableStateOf(0) }
     var pendingHistoryAnchorOffset by remember { mutableStateOf(0) }
+    var autoScrollEnabled by remember(state.activeSessionId) { mutableStateOf(true) }
     val visibleLimit = min(displayMessages.size, MaxRenderedMessageCount)
     val effectiveVisibleCount = min(visibleMessageCount, visibleLimit)
     val hiddenMessageCount = (displayMessages.size - effectiveVisibleCount).coerceAtLeast(0)
@@ -941,8 +944,21 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
         "${message.id}:${message.text.length}:${message.attachments.size}:${state.isWorking}"
     }.orEmpty()
 
+    LaunchedEffect(listState, state.activeSessionId) {
+        snapshotFlow {
+            if (listState.isScrollInProgress) !listState.canScrollForward else null
+        }.collect { isAtBottom ->
+            if (isAtBottom != null) {
+                autoScrollEnabled = isAtBottom
+            }
+        }
+    }
+
     LaunchedEffect(state.activeSessionId, latestMessageRenderKey, state.diffLines.sumOf { it.length }) {
-        if (pendingHistoryOffset == 0) {
+        if (displayMessages.lastOrNull()?.role == "user") {
+            autoScrollEnabled = true
+        }
+        if (pendingHistoryOffset == 0 && autoScrollEnabled) {
             val itemCount =
                 (if (hiddenMessageCount > 0) 1 else 0) +
                     (if (displayMessages.isEmpty()) 1 else 0) +

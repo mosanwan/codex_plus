@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     effort?: string | null;
     approvalPolicy?: string;
     approvalsReviewer?: string;
-    permissionProfile?: string;
+    permissions?: string;
     sandbox?: string;
   }) =>
     ipcRenderer.invoke("codex:thread:start", options),
@@ -113,7 +113,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     effort?: string | null;
     approvalPolicy?: string;
     approvalsReviewer?: string;
-    permissionProfile?: string;
+    permissions?: string;
     sandbox?: string;
   }) =>
     ipcRenderer.invoke("codex:thread:resume", options),
@@ -126,7 +126,7 @@ contextBridge.exposeInMainWorld("codexApp", {
     effort?: string | null;
     approvalPolicy?: string;
     approvalsReviewer?: string;
-    permissionProfile?: string;
+    permissions?: string;
     sandboxPolicy?: JsonObject;
   }) =>
     ipcRenderer.invoke("codex:turn:start", options),

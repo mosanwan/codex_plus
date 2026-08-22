@@ -26,7 +26,7 @@ import {
   WifiOff,
   X
 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ClipboardEvent,
   CSSProperties,
@@ -71,13 +71,23 @@ interface TranscriptEntry {
     | "search"
     | "plan"
     | "diff"
-    | "approval";
+    | "approval"
+    | "error";
   text: string;
   meta?: string;
   createdAt?: number;
 }
 
 type TranscriptUpdater = (previous: TranscriptEntry[]) => TranscriptEntry[];
+
+type PendingTranscriptUpdate =
+  | { kind: "assistantDelta"; text: string }
+  | {
+      kind: "commandDelta";
+      id: string;
+      stream: "stdout" | "stderr" | "unknown";
+      text: string;
+    };
 
 interface ApprovalEntry {
   id: string | number;
@@ -279,6 +289,7 @@ const DEFAULT_NOTIFICATION_SOUND_VOLUME = 70;
 const APP_VERSION_LABEL = `v${desktopPackage.version}`;
 const INITIAL_VISIBLE_TRANSCRIPT_COUNT = 40;
 const TRANSCRIPT_PAGE_SIZE = 40;
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 96;
 const BACKGROUND_SESSION_REFRESH_DELAY_MS = 350;
 const RELIABLE_RELAY_RETRY_MS = 5000;
 const DESKTOP_SNAPSHOT_DEBOUNCE_MS = 500;
@@ -289,6 +300,10 @@ const RELAY_EVENT_TEXT_MAX_CHARS = 1200;
 const RELAY_MESSAGE_TEXT_MAX_CHARS = 4000;
 const RELAY_PROGRESS_DEBOUNCE_MS = 1000;
 const STREAM_TRANSCRIPT_FLUSH_MS = 300;
+const LONG_TRANSCRIPT_FLUSH_MS = 450;
+const VERY_LONG_TRANSCRIPT_FLUSH_MS = 600;
+const LONG_TRANSCRIPT_ENTRY_COUNT = 160;
+const VERY_LONG_TRANSCRIPT_ENTRY_COUNT = 400;
 const RELAY_RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000, 30000] as const;
 const RELAY_RECONNECT_JITTER_MS = 500;
 const RELAY_STABLE_CONNECTION_MS = 30000;
@@ -752,12 +767,7 @@ const PERMISSION_OPTIONS: Array<{
       "Codex can edit files outside this workspace and access the internet without asking for approval."
   }
 ];
-const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { id: "gpt-5.5", label: "GPT-5.5" },
-  { id: "gpt-5", label: "GPT-5" },
-  { id: "gpt-5-codex", label: "GPT-5 Codex" },
-  { id: "o3", label: "o3" }
-];
+const CODEX_DEFAULT_MODEL_OPTION: ModelOption = { id: "", label: "Codex default" };
 const EFFORT_OPTIONS: Array<{
   value: ModelEffort;
   label: string;
@@ -898,7 +908,7 @@ export function App() {
   );
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readSavedThemeMode());
   const [language, setLanguage] = useState<UILanguage>(() => readSavedLanguage());
-  const [model, setModel] = useState(() => readSavedModel());
+  const [model, setModel] = useState("");
   const [modelEffort, setModelEffort] = useState<ModelEffort>(() =>
     readSavedModelEffort()
   );
@@ -910,7 +920,7 @@ export function App() {
   );
   const [notificationSoundFile, setNotificationSoundFile] =
     useState<NotificationSoundFile | null>(() => readSavedNotificationSoundFile());
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>(FALLBACK_MODEL_OPTIONS);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [rateLimitUsage, setRateLimitUsage] = useState<RateLimitUsage | null>(null);
   const [relayState, setRelayState] = useState<RelayConnectionState>("disabled");
@@ -936,6 +946,7 @@ export function App() {
   );
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const isTranscriptPinnedToBottomRef = useRef(true);
   const relaySocketRef = useRef<WebSocket | null>(null);
   const relayReconnectTimerRef = useRef<number | null>(null);
   const relayConnectionGenerationRef = useRef(0);
@@ -966,7 +977,7 @@ export function App() {
   const relayProgressTimerRef = useRef<number | null>(null);
   const pendingRelayProgressRef = useRef<Record<string, RelayProgressPayload>>({});
   const transcriptFlushTimerRef = useRef<number | null>(null);
-  const pendingTranscriptUpdatersRef = useRef<TranscriptUpdater[]>([]);
+  const pendingTranscriptUpdatesRef = useRef<PendingTranscriptUpdate[]>([]);
   const lastReliableSnapshotSignatureRef = useRef("");
   const processedClientCommandIdsRef = useRef<Set<string>>(
     new Set(readStringList(CLIENT_COMMAND_IDS_STORAGE_KEY))
@@ -987,9 +998,9 @@ export function App() {
       textFor(language, key, values),
     [language]
   );
-  const modelSelectOptions = modelOptions.some(option => option.id === model)
+  const modelSelectOptions = modelOptions.length > 0
     ? modelOptions
-    : [{ id: model, label: model }, ...modelOptions];
+    : [CODEX_DEFAULT_MODEL_OPTION];
   const workspaceSessionEntries = workspaces.flatMap(cwd =>
     (workspaceSessions[cwd] ?? []).map(item => ({ workspace: cwd, session: item }))
   );
@@ -1224,18 +1235,52 @@ export function App() {
     requestScrollToBottom();
   }
 
-  function scheduleTranscriptUpdateForActiveThread(
+  function scheduleAssistantDeltaForActiveThread(
     threadId: string | null | undefined,
-    updater: TranscriptUpdater
+    text: string
+  ) {
+    scheduleTranscriptOperationForActiveThread(threadId, {
+      kind: "assistantDelta",
+      text
+    });
+  }
+
+  function scheduleCommandDeltaForActiveThread(
+    threadId: string | null | undefined,
+    id: string,
+    stream: "stdout" | "stderr" | "unknown",
+    text: string
+  ) {
+    scheduleTranscriptOperationForActiveThread(threadId, {
+      kind: "commandDelta",
+      id,
+      stream,
+      text
+    });
+  }
+
+  function scheduleTranscriptOperationForActiveThread(
+    threadId: string | null | undefined,
+    update: PendingTranscriptUpdate
   ) {
     if (!isActiveEventThread(threadId)) {
       return;
     }
 
-    pendingTranscriptUpdatersRef.current = [
-      ...pendingTranscriptUpdatersRef.current,
-      updater
-    ];
+    const pending = pendingTranscriptUpdatesRef.current;
+    const last = pending.at(-1);
+    if (last?.kind === "assistantDelta" && update.kind === "assistantDelta") {
+      last.text += update.text;
+    } else if (
+      last?.kind === "commandDelta" &&
+      update.kind === "commandDelta" &&
+      last.id === update.id &&
+      last.stream === update.stream
+    ) {
+      last.text += update.text;
+    } else {
+      pending.push(update);
+    }
     if (transcriptFlushTimerRef.current !== null) {
       return;
     }
@@ -1243,21 +1288,31 @@ export function App() {
     transcriptFlushTimerRef.current = window.setTimeout(() => {
       transcriptFlushTimerRef.current = null;
       flushPendingTranscriptUpdates();
-    }, STREAM_TRANSCRIPT_FLUSH_MS);
+    }, transcriptFlushDelay(transcriptRef.current.length));
   }
 
   function flushPendingTranscriptUpdates() {
-    const updaters = pendingTranscriptUpdatersRef.current;
-    if (updaters.length === 0) {
+    const updates = pendingTranscriptUpdatesRef.current;
+    if (updates.length === 0) {
       return;
     }
-    pendingTranscriptUpdatersRef.current = [];
+    pendingTranscriptUpdatesRef.current = [];
 
     setTranscript(previous => {
-      const next = updaters.reduce(
-        (current, updater) => updater(current),
-        previous
-      );
+      const next = updates.reduce((current, update) => {
+        if (update.kind === "assistantDelta") {
+          return appendAssistantDelta(current, update.text);
+        }
+        if (update.kind === "commandDelta") {
+          return appendCommandTimelineDelta(
+            current,
+            update.id,
+            update.stream,
+            update.text
+          );
+        }
+        return current;
+      }, previous);
       transcriptRef.current = next;
       return next;
     });
@@ -1320,15 +1375,16 @@ export function App() {
           isWorking: true,
           message: relayAssistantProgressMessage(event.threadId, event.turnId)
         });
-        scheduleTranscriptUpdateForActiveThread(event.threadId, previous =>
-          appendAssistantDelta(previous, event.text)
-        );
+        scheduleAssistantDeltaForActiveThread(event.threadId, event.text);
       }
 
       if (event.type === "command.delta") {
         const id = event.itemId ?? `${event.stream}-${event.turnId}`;
-        scheduleTranscriptUpdateForActiveThread(event.threadId, previous =>
-          appendCommandTimelineDelta(previous, id, event.stream, event.text)
+        scheduleCommandDeltaForActiveThread(
+          event.threadId,
+          id,
+          event.stream,
+          event.text
         );
       }
 
@@ -1410,7 +1466,20 @@ export function App() {
         }
         void refreshRateLimitUsage();
         if (isActiveEventThread(event.threadId)) {
-          setStatus("Turn completed.");
+          const failureMessage = turnFailureMessage(event.turn);
+          if (failureMessage) {
+            updateTranscriptForActiveThread(event.threadId, previous =>
+              upsertTimelineEvent(previous, {
+                id: `turn-error-${event.turnId}`,
+                role: "error",
+                text: failureMessage,
+                meta: "failed"
+              })
+            );
+            setStatus(`Turn failed: ${failureMessage}`);
+          } else {
+            setStatus("Turn completed.");
+          }
         }
       }
     });
@@ -1900,13 +1969,28 @@ export function App() {
     return parts.at(-1) || workspace;
   }, [workspace]);
 
-  function requestScrollToBottom() {
+  function requestScrollToBottom(force = false) {
+    if (force) {
+      isTranscriptPinnedToBottomRef.current = true;
+    }
+    if (!isTranscriptPinnedToBottomRef.current) {
+      return;
+    }
     setScrollRequest(previous => previous + 1);
   }
 
   function resetVisibleTranscriptWindow() {
+    isTranscriptPinnedToBottomRef.current = true;
     setVisibleTranscriptCount(INITIAL_VISIBLE_TRANSCRIPT_COUNT);
   }
+
+  const handleMessagesScroll = useCallback(() => {
+    const element = messagesRef.current;
+    if (!element) {
+      return;
+    }
+    isTranscriptPinnedToBottomRef.current = isElementNearBottom(element);
+  }, []);
 
   function loadOlderTranscript() {
     const element = messagesRef.current;
@@ -2170,7 +2254,7 @@ export function App() {
     }
 
     try {
-      const response = await desktopApi.listModels({ includeHidden: true, limit: 100 });
+      const response = await desktopApi.listModels({ includeHidden: false, limit: 100 });
       const modelSummaries = modelListData(response);
       const options = modelSummaries
         .map(modelOptionFromSummary)
@@ -2179,12 +2263,19 @@ export function App() {
         setModelOptions(options);
         const defaultModel = modelSummaries.find(item => item.isDefault);
         const defaultOption = defaultModel ? modelOptionFromSummary(defaultModel) : null;
-        if (!window.localStorage.getItem(MODEL_STORAGE_KEY) && defaultOption) {
-          updateModel(defaultOption.id);
+        const savedModel = window.localStorage.getItem(MODEL_STORAGE_KEY)?.trim() ?? "";
+        const nextModel = options.some(option => option.id === savedModel)
+          ? savedModel
+          : defaultOption?.id ?? options[0].id;
+        if (nextModel !== model) {
+          setModel(nextModel);
+        }
+        if (nextModel) {
+          window.localStorage.setItem(MODEL_STORAGE_KEY, nextModel);
         }
       }
     } catch {
-      setModelOptions(FALLBACK_MODEL_OPTIONS);
+      setModelOptions([]);
     }
   }
 
@@ -2317,7 +2408,7 @@ export function App() {
             : `Session started in ${workspace}`
         )
       ]);
-      requestScrollToBottom();
+      requestScrollToBottom(true);
       setStatus(
         latestSession && response.thread.id === latestSession.threadId
           ? "Previous workspace session resumed."
@@ -2375,7 +2466,7 @@ export function App() {
       setTranscript([
         systemEntry(`New session started in ${cwd}`)
       ]);
-      requestScrollToBottom();
+      requestScrollToBottom(true);
       setStatus("New session ready.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -2446,7 +2537,7 @@ export function App() {
         ...transcriptFromThread(response.thread),
         systemEntry(`Session resumed in ${cwd}`)
       ]);
-      requestScrollToBottom();
+      requestScrollToBottom(true);
       const renameOverride = titleOverrides[response.thread.id];
       if (
         renameOverride &&
@@ -2694,7 +2785,7 @@ export function App() {
       ...previous,
       { id: `user-${Date.now()}`, role: "user", text: displayText, createdAt: Date.now() }
     ]);
-    requestScrollToBottom();
+    requestScrollToBottom(true);
     setStatus("Sending turn.");
 
     try {
@@ -2706,7 +2797,7 @@ export function App() {
         ...codexModelOptions(model, modelEffort)
       });
       markSessionTurnRunning(targetSession.threadId, response.turn.id);
-      requestScrollToBottom();
+      requestScrollToBottom(true);
     } catch (error) {
       clearSessionTurnRunning(targetSession.threadId);
       if (options.clearLocalComposer ?? true) {
@@ -2773,7 +2864,7 @@ export function App() {
     }
   }
 
-  async function openFilePreview(path: string, label: string) {
+  const openFilePreview = useCallback(async (path: string, label: string) => {
     const requestedPath = normalizePreviewHref(path);
     const workspace = activeWorkspaceRef.current;
     if (!desktopApi || !workspace || !requestedPath) {
@@ -2808,7 +2899,11 @@ export function App() {
         error: error instanceof Error ? error.message : String(error)
       });
     }
-  }
+  }, [desktopApi, t]);
+
+  const openExternalUrl = useCallback((url: string) => {
+    void desktopApi?.openExternalUrl(url);
+  }, [desktopApi]);
 
   function addAttachments(nextAttachments: ComposerAttachment[]) {
     setAttachments(previous => {
@@ -4236,7 +4331,13 @@ export function App() {
             <p>{status}</p>
           </div>
         </header>
-        <div className="messages" role="log" aria-live="polite" ref={messagesRef}>
+        <div
+          className="messages"
+          role="log"
+          aria-live="polite"
+          onScroll={handleMessagesScroll}
+          ref={messagesRef}
+        >
             {isConversationLoading ? (
               <div className="loadingState">
                 <span className="loadingSpinner" aria-hidden="true" />
@@ -4265,7 +4366,7 @@ export function App() {
                     entry={entry}
                     key={entry.id}
                     language={language}
-                    onOpenExternalUrl={url => void desktopApi?.openExternalUrl(url)}
+                    onOpenExternalUrl={openExternalUrl}
                     onPreviewFile={openFilePreview}
                   />
                 ))}
@@ -5848,10 +5949,6 @@ function isLegacyDefaultRelayEndpoint(value: string): boolean {
   );
 }
 
-function readSavedModel(): string {
-  return window.localStorage.getItem(MODEL_STORAGE_KEY) ?? "gpt-5.5";
-}
-
 function readSavedModelEffort(): ModelEffort {
   const saved = window.localStorage.getItem(MODEL_EFFORT_STORAGE_KEY);
   return isModelEffort(saved) ? saved : "high";
@@ -5961,10 +6058,10 @@ function effortDescription(value: ModelEffort, language: UILanguage = "en"): str
 }
 
 function codexModelOptions(model: string, effort: ModelEffort): {
-  model: string;
+  model?: string;
   effort: ModelEffort;
 } {
-  return { model, effort };
+  return model ? { model, effort } : { effort };
 }
 
 function contextUsageFromNotification(params: unknown): ContextUsage | null {
@@ -6240,24 +6337,20 @@ function formatBytes(value: number): string {
 function codexPermissionOptions(value: PermissionMode): {
   approvalPolicy: string;
   approvalsReviewer: string;
-  permissionProfile: string;
-  sandbox?: string;
-  sandboxPolicy?: { type: string };
+  permissions: string;
 } {
   if (value === "full-access") {
     return {
       approvalPolicy: "never",
       approvalsReviewer: "user",
-      permissionProfile: "full-access",
-      sandbox: "danger-full-access",
-      sandboxPolicy: { type: "dangerFullAccess" }
+      permissions: ":danger-full-access"
     };
   }
 
   return {
     approvalPolicy: "on-request",
     approvalsReviewer: value === "auto-review" ? "auto-reviewer" : "user",
-    permissionProfile: "workspace-write"
+    permissions: ":workspace"
   };
 }
 
@@ -6875,6 +6968,23 @@ function appendAssistantDelta(
   return next;
 }
 
+function transcriptFlushDelay(entryCount: number): number {
+  if (document.hidden || entryCount >= VERY_LONG_TRANSCRIPT_ENTRY_COUNT) {
+    return VERY_LONG_TRANSCRIPT_FLUSH_MS;
+  }
+  if (entryCount >= LONG_TRANSCRIPT_ENTRY_COUNT) {
+    return LONG_TRANSCRIPT_FLUSH_MS;
+  }
+  return STREAM_TRANSCRIPT_FLUSH_MS;
+}
+
+function isElementNearBottom(element: HTMLElement): boolean {
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    TRANSCRIPT_BOTTOM_THRESHOLD_PX
+  );
+}
+
 function relayNotificationBodyFromFinalMessage(message: string): string {
   return cleanNotificationText(message);
 }
@@ -6935,9 +7045,34 @@ function transcriptFromThread(thread: Thread): TranscriptEntry[] {
 
       entries.push(...timelineEntriesFromItem(id, type, record));
     }
+    const failureMessage = turnFailureMessage(turn);
+    if (failureMessage) {
+      entries.push({
+        id: `turn-error-${turn.id}`,
+        role: "error",
+        text: failureMessage,
+        meta: "failed"
+      });
+    }
   }
 
   return entries;
+}
+
+function turnFailureMessage(value: unknown): string | null {
+  const turn = asRecord(value);
+  if (stringOrUndefined(turn.status) !== "failed") {
+    return null;
+  }
+  const message = stringOrUndefined(asRecord(turn.error).message)?.trim();
+  if (!message) {
+    return "The Codex turn failed without an error message.";
+  }
+  try {
+    return stringOrUndefined(asRecord(JSON.parse(message)).detail)?.trim() || message;
+  } catch {
+    return message;
+  }
 }
 
 function timelineEntriesFromItem(
@@ -7107,6 +7242,8 @@ function roleLabel(role: TranscriptEntry["role"], language: UILanguage = "en"): 
       return textFor(language, "roleDiff");
     case "approval":
       return textFor(language, "roleApproval");
+    case "error":
+      return language === "zh-CN" ? "错误" : "Error";
   }
 }
 

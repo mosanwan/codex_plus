@@ -111,7 +111,7 @@ export class CodexAdapter {
         serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
+        permissions: options.permissions,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
         config: mergeConfig(options.config, options.effort),
@@ -135,7 +135,7 @@ export class CodexAdapter {
         serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
+        permissions: options.permissions,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
         config: mergeConfig(options.config, options.effort),
@@ -173,7 +173,7 @@ export class CodexAdapter {
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
-        permissionProfile: options.permissionProfile,
+        permissions: options.permissions,
         sandboxPolicy: options.sandboxPolicy
       })
     });

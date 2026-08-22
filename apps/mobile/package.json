@@ -1,12 +1,12 @@
 {
   "name": "@codep/mobile",
-  "version": "0.1.31",
+  "version": "0.1.41",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "cd android && ./gradlew :app:assembleDebug",
-    "typecheck": "cd android && ./gradlew :app:compileDebugKotlin",
+    "build": "node ../../scripts/run-mobile-gradle.mjs :app:assembleDebug",
+    "typecheck": "node ../../scripts/run-mobile-gradle.mjs :app:compileDebugKotlin",
     "android:open": "printf 'Open apps/mobile/android in Android Studio.\\n'",
-    "android:run": "cd android && ./gradlew :app:assembleDebug"
+    "android:run": "node ../../scripts/run-mobile-gradle.mjs :app:assembleDebug"
   }
 }

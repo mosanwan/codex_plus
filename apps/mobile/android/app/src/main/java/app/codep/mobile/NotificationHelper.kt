@@ -19,10 +19,12 @@ import kotlinx.serialization.json.contentOrNull
 
 class NotificationHelper(private val context: Context) {
     private val channelId = "codep_turn_complete_alerts_v1"
+    private val retiredBackgroundChannelId = "codep_relay_background_silent_v1"
 
     fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java)
+        manager.deleteNotificationChannel(retiredBackgroundChannelId)
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
