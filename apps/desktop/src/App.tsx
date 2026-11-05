@@ -36,6 +36,7 @@ import type {
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { SidebarResizer } from "./SidebarResizer";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
 import type {
   DesktopUpdateInfo,
@@ -318,6 +319,8 @@ const UI_TEXT = {
     localWorkspace: "Local Codex workspace",
     expandSidebar: "Expand sidebar",
     collapseSidebar: "Collapse sidebar",
+    resizeSidebar: "Resize sidebar",
+    resetSidebarWidth: "Double-click to reset width",
     openSession: "Open",
     sessions: "Sessions",
     workspaces: "Workspaces",
@@ -352,6 +355,9 @@ const UI_TEXT = {
     loadingSessionBody: "Resuming Codex history for this workspace.",
     loadOlderMessages: "Load {count} older messages",
     hiddenMessages: "{count} hidden",
+    expandOutput: "Show full output",
+    collapseOutput: "Collapse output",
+    outputPreview: "Long output collapsed; showing the beginning and end.",
     working: "Working",
     ready: "Ready",
     noSession: "No session",
@@ -526,6 +532,8 @@ const UI_TEXT = {
     localWorkspace: "本地 Codex 工作区",
     expandSidebar: "展开侧边栏",
     collapseSidebar: "折叠侧边栏",
+    resizeSidebar: "调整侧边栏宽度",
+    resetSidebarWidth: "双击恢复默认宽度",
     openSession: "打开",
     sessions: "Sessions",
     workspaces: "工作区",
@@ -560,6 +568,9 @@ const UI_TEXT = {
     loadingSessionBody: "正在恢复这个工作区的 Codex 历史。",
     loadOlderMessages: "加载更早的 {count} 条消息",
     hiddenMessages: "已隐藏 {count} 条",
+    expandOutput: "展开完整输出",
+    collapseOutput: "收起输出",
+    outputPreview: "长输出已收起，当前显示开头和结尾。",
     working: "Working",
     ready: "Ready",
     noSession: "无 Session",
@@ -1001,12 +1012,12 @@ export function App() {
   const modelSelectOptions = modelOptions.length > 0
     ? modelOptions
     : [CODEX_DEFAULT_MODEL_OPTION];
-  const workspaceSessionEntries = workspaces.flatMap(cwd =>
+  const workspaceSessionEntries = useMemo(() => workspaces.flatMap(cwd =>
     (workspaceSessions[cwd] ?? []).map(item => ({ workspace: cwd, session: item }))
-  );
-  const recentSessions = [...workspaceSessionEntries].sort(
+  ), [workspaces, workspaceSessions]);
+  const recentSessions = useMemo(() => [...workspaceSessionEntries].sort(
     (left, right) => (right.session.updatedAt ?? 0) - (left.session.updatedAt ?? 0)
-  );
+  ), [workspaceSessionEntries]);
 
   useEffect(() => {
     transcriptRef.current = transcript;
@@ -1742,7 +1753,7 @@ export function App() {
     const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
         const element = messagesRef.current;
-        if (element) {
+        if (element && isTranscriptPinnedToBottomRef.current) {
           element.scrollTop = element.scrollHeight;
         }
       });
@@ -4026,6 +4037,7 @@ export function App() {
         </div>
       ) : null}
       <aside
+        id="sessionSidebar"
         className="sidebar"
         aria-label={t("sessions")}
         data-collapsed={isSidebarCollapsed}
@@ -4323,6 +4335,10 @@ export function App() {
           </div>
         </div>
       </aside>
+
+      {!isSidebarCollapsed ? (
+        <SidebarResizer label={t("resizeSidebar")} resetLabel={t("resetSidebarWidth")} />
+      ) : null}
 
       <section className="conversation" aria-label={t("conversation")}>
         <header className="topbar">
@@ -6742,13 +6758,45 @@ const TimelineEntry = memo(function TimelineEntry({
           <strong>{roleLabel(entry.role, language)}</strong>
           {entry.meta ? <code>{entry.meta}</code> : null}
         </div>
-        <MarkdownContent
-          text={entry.text || "..."}
-          onOpenExternalUrl={onOpenExternalUrl}
-          onPreviewFile={onPreviewFile}
-        />
+        {entry.role === "commandOutput" || entry.role === "command" ? (
+          <CommandOutput text={entry.text || "..."} language={language} />
+        ) : (
+          <MarkdownContent
+            text={entry.text || "..."}
+            onOpenExternalUrl={onOpenExternalUrl}
+            onPreviewFile={onPreviewFile}
+          />
+        )}
       </div>
     </article>
+  );
+});
+
+const OUTPUT_PREVIEW_CHARS = 12_000;
+const OUTPUT_PREVIEW_HEAD_CHARS = 4_000;
+
+const CommandOutput = memo(function CommandOutput({ text, language }: {
+  text: string;
+  language: UILanguage;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > OUTPUT_PREVIEW_CHARS;
+  const preview = isLong && !expanded
+    ? `${text.slice(0, OUTPUT_PREVIEW_HEAD_CHARS)}\n\n…\n\n${text.slice(-(OUTPUT_PREVIEW_CHARS - OUTPUT_PREVIEW_HEAD_CHARS))}`
+    : text;
+
+  return (
+    <div className="markdownContent commandOutput">
+      <pre className="commandOutputText" tabIndex={0}>{preview}</pre>
+      {isLong ? (
+        <div className="commandOutputControls">
+          {!expanded ? <span>{textFor(language, "outputPreview")}</span> : null}
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+            {textFor(language, expanded ? "collapseOutput" : "expandOutput")}
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 });
 

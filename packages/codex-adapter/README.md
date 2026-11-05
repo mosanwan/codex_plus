@@ -37,3 +37,15 @@ npm run probe:adapter -- --turn "Say hello briefly."
 ```
 
 The `--turn` mode may call the model and consume account quota.
+
+To check a specific CLI installation and automatic review compatibility:
+
+```bash
+npm run probe:adapter -- --codex-command /path/to/codex --approvals-reviewer auto-reviewer
+```
+
+The adapter translates the desktop's `auto-reviewer` value to the protocol's
+`auto_review`. Threads use legacy history while the desktop consumes full-history
+RPC responses. The desktop selects its HTTPS provider with process-level `-c`
+overrides, so thread and turn providers agree without modifying `config.toml`.
+The probe accepts repeated `--config key=value` arguments for the same checks.

@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 
 export interface CodexAppServerProcessOptions {
   codexCommand?: string;
+  configOverrides?: string[];
   port?: number;
   startupTimeoutMs?: number;
 }
@@ -31,6 +32,7 @@ export class CodexAppServerProcess {
     const port = options.port ?? (await findFreePort());
     const process = new CodexAppServerProcess({
       codexCommand: options.codexCommand ?? "codex",
+      configOverrides: options.configOverrides ?? [],
       port,
       startupTimeoutMs: options.startupTimeoutMs ?? 10_000
     });
@@ -78,20 +80,25 @@ export class CodexAppServerProcess {
 
   private async start(): Promise<void> {
     const env = runtimeEnv();
-    const args = ["app-server", "--listen", this.url];
+    const args = [
+      "app-server", "--listen", this.url,
+      ...this.options.configOverrides.flatMap(value => ["-c", value])
+    ];
     const child = isWindowsCommandScript(this.options.codexCommand)
       ? spawn(
           process.env.ComSpec || "cmd.exe",
           ["/d", "/s", "/c", this.options.codexCommand, ...args],
           {
-            detached: true,
+            // On Windows detached requests a new console, even with windowsHide.
+            // taskkill /T already handles the child tree during shutdown.
+            detached: false,
             stdio: ["ignore", "pipe", "pipe"],
             env,
             windowsHide: true
           }
         )
       : spawn(this.options.codexCommand, args, {
-          detached: true,
+          detached: process.platform !== "win32",
           stdio: ["ignore", "pipe", "pipe"],
           env,
           windowsHide: process.platform === "win32"

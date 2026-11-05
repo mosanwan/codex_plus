@@ -4,6 +4,10 @@ import { CodexAdapter } from "./client.js";
 async function main(): Promise<void> {
   const turnText = readTurnArg();
   const adapter = new CodexAdapter({
+    codexCommand: readArg("--codex-command") ?? undefined,
+    configOverrides: process.argv.flatMap((value, index) =>
+      value === "--config" ? [process.argv[index + 1] ?? ""] : []
+    ),
     clientInfo: {
       name: "codep-adapter-probe",
       title: "Codex+ Adapter Probe",
@@ -49,7 +53,10 @@ async function main(): Promise<void> {
 
     const threadResponse = await adapter.startThread({
       cwd: process.cwd(),
-      ephemeral: true
+      ephemeral: true,
+      approvalPolicy: "on-request",
+      permissions: ":workspace",
+      approvalsReviewer: readArg("--approvals-reviewer") ?? "user"
     });
     console.log("[thread]", threadResponse.thread.id);
     console.log("[model]", threadResponse.modelProvider, threadResponse.model);
@@ -68,13 +75,17 @@ async function main(): Promise<void> {
 }
 
 function readTurnArg(): string | null {
-  const index = process.argv.indexOf("--turn");
+  return readArg("--turn");
+}
+
+function readArg(flag: string): string | null {
+  const index = process.argv.indexOf(flag);
   if (index === -1) {
     return null;
   }
   const value = process.argv[index + 1];
   if (!value) {
-    throw new Error("Missing value after --turn");
+    throw new Error(`Missing value after ${flag}`);
   }
   return value;
 }
@@ -94,14 +105,20 @@ async function waitForTurnCompleted(
         return;
       }
 
-      const params = notification.params as { turn?: { id?: string } } | undefined;
+      const params = notification.params as {
+        turn?: { id?: string; status?: string; error?: { message?: string } | null };
+      } | undefined;
       if (params?.turn?.id !== turnId) {
         return;
       }
 
       clearTimeout(timeout);
       unsubscribe();
-      resolve();
+      if (params.turn.status === "completed") {
+        resolve();
+      } else {
+        reject(new Error(params.turn.error?.message ?? `Turn ended with status ${params.turn.status}`));
+      }
     });
   });
 }

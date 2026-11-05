@@ -195,18 +195,16 @@ interface UpdateManifest {
 
 const DEFAULT_GITHUB_RELEASE_API_URL =
   "https://api.github.com/repos/mosanwan/codex_plus/releases/latest";
-const CODEX_HTTPS_PROVIDER_ID = "openai-http";
-const CODEX_HTTPS_PROVIDER_CONFIG: JsonObject = {
-  model_providers: {
-    [CODEX_HTTPS_PROVIDER_ID]: {
-      name: "OpenAI HTTPS",
-      base_url: "https://chatgpt.com/backend-api/codex",
-      wire_api: "responses",
-      requires_openai_auth: true,
-      supports_websockets: false
-    }
-  }
-};
+// Set the provider for the whole server: newer CLIs validate each turn against
+// the server's current provider, even if thread/start selected another one.
+const CODEX_HTTPS_CONFIG_OVERRIDES = [
+  "model_provider=openai-http",
+  "model_providers.openai-http.name=OpenAI-HTTPS",
+  "model_providers.openai-http.base_url=https://chatgpt.com/backend-api/codex",
+  "model_providers.openai-http.wire_api=responses",
+  "model_providers.openai-http.requires_openai_auth=true",
+  "model_providers.openai-http.supports_websockets=false"
+];
 const UPDATE_CHECK_TIMEOUT_MS = 8000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 120000;
 const DESKTOP_ICON_PATH = path.resolve(__dirname, "..", "assets", "codex-plus.png");
@@ -393,6 +391,7 @@ async function connectWithCodexCommand(
 function createCodexAdapter(codexCommandPath?: string): CodexAdapter {
   const nextAdapter = new CodexAdapter({
     codexCommand: codexCommandPath,
+    configOverrides: CODEX_HTTPS_CONFIG_OVERRIDES,
     clientInfo: {
       name: "codep-desktop",
       title: "Codex+ Desktop",
@@ -714,14 +713,12 @@ function registerIpcHandlers(): void {
       return adapter.startThread({
         cwd: options.cwd,
         model: options.model,
-        modelProvider: CODEX_HTTPS_PROVIDER_ID,
         serviceTier: options.serviceTier,
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
         permissions: options.permissions,
-        sandbox: options.sandbox,
-        config: CODEX_HTTPS_PROVIDER_CONFIG
+        sandbox: options.sandbox
       });
     }
   );
@@ -799,14 +796,12 @@ function registerIpcHandlers(): void {
       return adapter.resumeThread(options.threadId, {
         cwd: options.cwd,
         model: options.model,
-        modelProvider: CODEX_HTTPS_PROVIDER_ID,
         serviceTier: options.serviceTier,
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         approvalsReviewer: options.approvalsReviewer,
         permissions: options.permissions,
         sandbox: options.sandbox,
-        config: CODEX_HTTPS_PROVIDER_CONFIG,
         excludeTurns: false
       });
     }
@@ -1647,8 +1642,6 @@ async function runPeriodicTask(
 
     await codex.resumeThread(sessionId, {
       cwd: current.workspace,
-      modelProvider: CODEX_HTTPS_PROVIDER_ID,
-      config: CODEX_HTTPS_PROVIDER_CONFIG,
       ...periodicTaskPermissionOptions(current.permissionMode),
       ...periodicTaskModelOptions(current)
     }).catch(() => undefined);
@@ -1690,8 +1683,6 @@ async function ensurePeriodicTaskSession(
 
   const response = await codex.startThread({
     cwd: task.workspace,
-    modelProvider: CODEX_HTTPS_PROVIDER_ID,
-    config: CODEX_HTTPS_PROVIDER_CONFIG,
     ...periodicTaskPermissionOptions(task.permissionMode),
     ...periodicTaskModelOptions(task)
   });

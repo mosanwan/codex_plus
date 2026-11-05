@@ -50,6 +50,7 @@ export class CodexAdapter {
 
     this.appServer = await CodexAppServerProcess.start({
       codexCommand: this.options.codexCommand,
+      configOverrides: this.options.configOverrides,
       port: this.options.port,
       startupTimeoutMs: this.options.startupTimeoutMs
     });
@@ -110,13 +111,16 @@ export class CodexAdapter {
         modelProvider: options.modelProvider,
         serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
-        approvalsReviewer: options.approvalsReviewer,
+        approvalsReviewer: normalizeApprovalsReviewer(options.approvalsReviewer),
         permissions: options.permissions,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
         config: mergeConfig(options.config, options.effort),
         ephemeral: options.ephemeral
       }),
+      // The desktop currently consumes full history from thread/read and resume.
+      // Newer servers default to paginated history, which needs separate RPCs.
+      historyMode: "legacy",
       experimentalRawEvents: true,
       persistExtendedHistory: true
     });
@@ -134,7 +138,7 @@ export class CodexAdapter {
         modelProvider: options.modelProvider,
         serviceTier: options.serviceTier,
         approvalPolicy: options.approvalPolicy,
-        approvalsReviewer: options.approvalsReviewer,
+        approvalsReviewer: normalizeApprovalsReviewer(options.approvalsReviewer),
         permissions: options.permissions,
         sandbox: options.sandbox,
         runtimeWorkspaceRoots: options.runtimeWorkspaceRoots,
@@ -172,7 +176,7 @@ export class CodexAdapter {
         serviceTier: options.serviceTier,
         effort: options.effort,
         approvalPolicy: options.approvalPolicy,
-        approvalsReviewer: options.approvalsReviewer,
+        approvalsReviewer: normalizeApprovalsReviewer(options.approvalsReviewer),
         permissions: options.permissions,
         sandboxPolicy: options.sandboxPolicy
       })
@@ -289,6 +293,10 @@ export class CodexAdapter {
       }
     );
   }
+}
+
+function normalizeApprovalsReviewer(value: string | undefined): string | undefined {
+  return value === "auto-reviewer" ? "auto_review" : value;
 }
 
 function definedOnly<T extends Record<string, unknown>>(object: T): Partial<T> {

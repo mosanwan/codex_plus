@@ -1,6 +1,6 @@
 {
   "name": "@codep/codex-adapter",
-  "version": "0.1.41",
+  "version": "0.1.47",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

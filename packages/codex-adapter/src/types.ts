@@ -169,6 +169,7 @@ export type UserInput =
 
 export interface CodexAdapterOptions {
   codexCommand?: string;
+  configOverrides?: string[];
   port?: number;
   clientInfo?: ClientInfo;
   startupTimeoutMs?: number;
