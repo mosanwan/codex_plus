@@ -26,7 +26,7 @@ import {
   WifiOff,
   X
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ClipboardEvent,
   CSSProperties,
@@ -34,9 +34,10 @@ import type {
   KeyboardEvent,
   ReactNode
 } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SidebarResizer } from "./SidebarResizer";
+import { artifactMessageReference, imageGenerationEntry, normalizePreviewHref, renderFileCitations } from "./artifacts";
 import type { CodexAdapterEvent, Thread, UserInput } from "@codep/codex-adapter";
 import type {
   DesktopUpdateInfo,
@@ -73,11 +74,15 @@ interface TranscriptEntry {
     | "plan"
     | "diff"
     | "approval"
+    | "artifact"
     | "error";
   text: string;
   meta?: string;
   createdAt?: number;
+  imagePath?: string;
 }
+
+const WorkspaceContext = createContext<{ workspace: string | null; onImageLoad?: () => void }>({ workspace: null });
 
 type TranscriptUpdater = (previous: TranscriptEntry[]) => TranscriptEntry[];
 
@@ -226,15 +231,17 @@ interface RemoteCommandEnvelope {
     limit?: number;
     path?: string;
     maxBytes?: number;
+    original?: boolean;
   };
 }
 
 interface RemoteSnapshotMessage {
   id: string;
-  role: "user" | "codex" | "event";
+  role: "user" | "codex" | "event" | "artifact";
   text: string;
   meta?: string;
   createdAt?: number;
+  attachments?: Array<{ id: string; kind: "image" | "file"; name: string; path: string; mimeType: string }>;
 }
 
 interface RelayProgressPayload {
@@ -355,6 +362,7 @@ const UI_TEXT = {
     loadingSessionBody: "Resuming Codex history for this workspace.",
     loadOlderMessages: "Load {count} older messages",
     hiddenMessages: "{count} hidden",
+    executionDetails: "Execution details · {count} items",
     expandOutput: "Show full output",
     collapseOutput: "Collapse output",
     outputPreview: "Long output collapsed; showing the beginning and end.",
@@ -568,6 +576,7 @@ const UI_TEXT = {
     loadingSessionBody: "正在恢复这个工作区的 Codex 历史。",
     loadOlderMessages: "加载更早的 {count} 条消息",
     hiddenMessages: "已隐藏 {count} 条",
+    executionDetails: "执行过程 · {count} 项",
     expandOutput: "展开完整输出",
     collapseOutput: "收起输出",
     outputPreview: "长输出已收起，当前显示开头和结尾。",
@@ -1971,6 +1980,11 @@ export function App() {
     () => transcript.slice(hiddenTranscriptCount),
     [hiddenTranscriptCount, transcript]
   );
+  const transcriptBlocks = useMemo(() => groupTranscriptActivity(visibleTranscript), [visibleTranscript]);
+  const artifactContext = useMemo(() => ({ workspace, onImageLoad: () => {
+    const element = messagesRef.current;
+    if (element && isTranscriptPinnedToBottomRef.current) element.scrollTop = element.scrollHeight;
+  } }), [workspace]);
 
   const shortWorkspace = useMemo(() => {
     if (!workspace) {
@@ -2998,10 +3012,14 @@ export function App() {
         return;
       }
       try {
+        if (!workspaces.includes(cwd) && cwd !== activeWorkspaceRef.current) {
+          throw new Error("The requested workspace is not open on this desktop.");
+        }
         const preview = await desktopApi.previewWorkspaceFile({
           cwd,
           path: requestedPath,
-          maxBytes: envelope.payload?.maxBytes
+          maxBytes: envelope.payload?.maxBytes,
+          original: envelope.payload?.original === true
         });
         publishRelay({
           type: "desktop.file_preview",
@@ -3968,6 +3986,7 @@ export function App() {
   }
 
   return (
+    <WorkspaceContext.Provider value={artifactContext}>
     <main className={`shell${isSidebarCollapsed ? " sidebarCollapsed" : ""}`}>
       {visibleDesktopUpdate && isUpdateDialogOpen ? (
         <div
@@ -4377,10 +4396,18 @@ export function App() {
                     <span>{t("hiddenMessages", { count: hiddenTranscriptCount })}</span>
                   </div>
                 ) : null}
-                {visibleTranscript.map(entry => (
+                {transcriptBlocks.map(block => block.type === "activity" ? (
+                  <ActivityGroup
+                    entries={block.entries}
+                    key={`${session?.threadId}:${block.id}`}
+                    language={language}
+                    onOpenExternalUrl={openExternalUrl}
+                    onPreviewFile={openFilePreview}
+                  />
+                ) : (
                   <TimelineEntry
-                    entry={entry}
-                    key={entry.id}
+                    entry={block.entry}
+                    key={`${session?.threadId}:${block.id}`}
                     language={language}
                     onOpenExternalUrl={openExternalUrl}
                     onPreviewFile={openFilePreview}
@@ -4676,6 +4703,7 @@ export function App() {
         />
       ) : null}
     </main>
+    </WorkspaceContext.Provider>
   );
 }
 
@@ -5521,6 +5549,8 @@ function FilePreviewModal({
             <p className="filePreviewStatus">{t("previewLoading")}</p>
           ) : previewState.error ? (
             <p className="filePreviewStatus">{previewState.error}</p>
+          ) : previewState.preview?.mimeType?.startsWith("image/") && previewState.preview.dataUrl ? (
+            <img className="filePreviewImage" src={previewState.preview.dataUrl} alt={title} />
           ) : (
             <pre>{previewState.preview?.content || ""}</pre>
           )}
@@ -6448,6 +6478,9 @@ function validRemoteAttachments(value: unknown): RemoteAttachmentInput[] {
 }
 
 function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMessage {
+  if (entry.role === "artifact") {
+    return { ...artifactMessageReference(entry), createdAt: transcriptEntryCreatedAt(entry) };
+  }
   if (entry.role === "user") {
     return {
       id: entry.id,
@@ -6457,10 +6490,12 @@ function remoteMessageFromTranscript(entry: TranscriptEntry): RemoteSnapshotMess
     };
   }
   if (entry.role === "assistant") {
+    const cited = renderFileCitations(entry.text, false);
     return {
       id: entry.id,
       role: "codex",
-      text: relayMessageTextFromTranscriptText(entry.text),
+      text: relayMessageTextFromTranscriptText(cited.text),
+      attachments: cited.files,
       meta: entry.meta,
       createdAt: transcriptEntryCreatedAt(entry)
     };
@@ -6739,6 +6774,62 @@ function ComposerCompletionMenu({
   );
 }
 
+type TranscriptBlock =
+  | { type: "entry"; id: string; entry: TranscriptEntry }
+  | { type: "activity"; id: string; entries: TranscriptEntry[] };
+
+function groupTranscriptActivity(entries: TranscriptEntry[]): TranscriptBlock[] {
+  const blocks: TranscriptBlock[] = [];
+  for (const entry of entries) {
+    if (["user", "assistant", "error", "approval", "artifact"].includes(entry.role)) {
+      blocks.push({ type: "entry", id: entry.id, entry });
+      continue;
+    }
+    const last = blocks.at(-1);
+    if (last?.type === "activity") {
+      last.entries.push(entry);
+    } else {
+      blocks.push({
+        type: "activity",
+        // Keep a clipped leading group open as the visible history window moves.
+        id: blocks.length === 0 ? "activity-leading" : `activity-${entry.id}`,
+        entries: [entry]
+      });
+    }
+  }
+  return blocks;
+}
+
+const ActivityGroup = memo(function ActivityGroup({ entries, language, onOpenExternalUrl, onPreviewFile }: {
+  entries: TranscriptEntry[];
+  language: UILanguage;
+  onOpenExternalUrl: (url: string) => void;
+  onPreviewFile: (path: string, label: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <details className="activityGroup" onToggle={event => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <ChevronRight size={14} aria-hidden="true" />
+        <span>{textFor(language, "executionDetails", { count: entries.length })}</span>
+      </summary>
+      {expanded ? (
+        <div className="activityEntries">
+          {entries.map(entry => (
+            <TimelineEntry
+              key={entry.id}
+              entry={entry}
+              language={language}
+              onOpenExternalUrl={onOpenExternalUrl}
+              onPreviewFile={onPreviewFile}
+            />
+          ))}
+        </div>
+      ) : null}
+    </details>
+  );
+});
+
 const TimelineEntry = memo(function TimelineEntry({
   entry,
   language,
@@ -6758,7 +6849,9 @@ const TimelineEntry = memo(function TimelineEntry({
           <strong>{roleLabel(entry.role, language)}</strong>
           {entry.meta ? <code>{entry.meta}</code> : null}
         </div>
-        {entry.role === "commandOutput" || entry.role === "command" ? (
+        {entry.role === "artifact" ? (
+          <ImageArtifact path={entry.imagePath} status={entry.text} language={language} />
+        ) : entry.role === "commandOutput" || entry.role === "command" ? (
           <CommandOutput text={entry.text || "..."} language={language} />
         ) : (
           <MarkdownContent
@@ -6774,6 +6867,36 @@ const TimelineEntry = memo(function TimelineEntry({
 
 const OUTPUT_PREVIEW_CHARS = 12_000;
 const OUTPUT_PREVIEW_HEAD_CHARS = 4_000;
+
+const ImageArtifact = memo(function ImageArtifact({ path, status, language }: {
+  path?: string; status: string; language: UILanguage;
+}) {
+  const { workspace, onImageLoad } = useContext(WorkspaceContext);
+  const [preview, setPreview] = useState<WorkspaceFilePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    setPreview(null); setError(null);
+    if (path && window.codexApp) {
+      window.codexApp.previewWorkspaceFile({ cwd: workspace ?? "", path }).then(value => {
+        if (active) setPreview(value);
+      }).catch(reason => { if (active) setError(String(reason?.message ?? reason)); });
+    }
+    return () => { active = false; };
+  }, [path, workspace]);
+  return (
+    <div className="imageArtifact">
+      {preview?.dataUrl ? <img src={preview.dataUrl} onLoad={onImageLoad} alt={language === "zh-CN" ? "生成的图片" : "Generated image"} /> : (
+        <p>{error ?? (path ? (language === "zh-CN" ? "正在加载图片…" : "Loading image…") : status)}</p>
+      )}
+      {path ? <button type="button" className="artifactFilePath"
+        title={language === "zh-CN" ? "用默认软件打开文件" : "Open file in default application"}
+        onClick={() => void window.codexApp?.openWorkspaceFile({ cwd: workspace ?? "", path })
+          .catch(reason => setError(String(reason?.message ?? reason)))}>{path}</button> : null}
+      {preview && error ? <p role="alert">{error}</p> : null}
+    </div>
+  );
+});
 
 const CommandOutput = memo(function CommandOutput({ text, language }: {
   text: string;
@@ -6809,6 +6932,9 @@ const MarkdownContent = memo(function MarkdownContent({
   onOpenExternalUrl: (url: string) => void;
   onPreviewFile: (path: string, label: string) => void;
 }) {
+  const { workspace } = useContext(WorkspaceContext);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const displayText = useMemo(() => renderFileCitations(text).text, [text]);
   const components = useMemo<Components>(
     () => ({
       ...markdownComponents,
@@ -6839,26 +6965,38 @@ const MarkdownContent = memo(function MarkdownContent({
           <button
             className="markdownPreviewLink"
             type="button"
-            onClick={() => onPreviewFile(previewPath, label)}
+            onClick={() => {
+              if (window.codexApp) {
+                void window.codexApp.openWorkspaceFile({ cwd: workspace ?? "", path: previewPath })
+                  .catch(reason => setFileError(String(reason?.message ?? reason)));
+              } else onPreviewFile(previewPath, label);
+            }}
           >
             {children}
           </button>
         );
       }
     }),
-    [onOpenExternalUrl, onPreviewFile]
+    [onOpenExternalUrl, onPreviewFile, workspace]
   );
 
   return (
     <div className="markdownContent">
-      <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}>
-        {text}
+      <ReactMarkdown components={components} remarkPlugins={[remarkGfm]}
+        urlTransform={(url, key) => key === "href" && normalizePreviewHref(url) ? url : defaultUrlTransform(url)}>
+        {displayText}
       </ReactMarkdown>
+      {fileError ? <p role="alert">{fileError}</p> : null}
     </div>
   );
 });
 
 const markdownComponents: Components = {
+  table({ children, node: _node, ...props }) {
+    return <div className="markdownTableScroll" role="region" aria-label="表格，可横向滚动" tabIndex={0}>
+      <table {...props}>{children}</table>
+    </div>;
+  },
   code(props) {
     const { children, className, ...rest } = props;
     const text = String(children ?? "");
@@ -6888,28 +7026,6 @@ function markdownNodeText(value: ReactNode): string {
     return value.map(markdownNodeText).join("").trim();
   }
   return "";
-}
-
-function normalizePreviewHref(value: string): string {
-  const trimmed = value.split("#")[0]?.split("?")[0]?.trim() ?? "";
-  if (!trimmed) {
-    return "";
-  }
-  if (/^file:\/\//i.test(trimmed)) {
-    try {
-      return decodeURIComponent(new URL(trimmed).pathname);
-    } catch {
-      return "";
-    }
-  }
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
-    return "";
-  }
-  try {
-    return decodeURIComponent(trimmed).trim();
-  } catch {
-    return trimmed;
-  }
 }
 
 function isHttpHref(value: string): boolean {
@@ -7130,6 +7246,9 @@ function timelineEntriesFromItem(
 ): TranscriptEntry[] {
   const normalizedType = type.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
   const entries: TranscriptEntry[] = [];
+  if (normalizedType === "image_generation") {
+    return [imageGenerationEntry(id, record)];
+  }
 
   if (type === "userMessage" || (normalizedType === "message" && record.role === "user")) {
     const text = firstText(contentText(record.content), itemText(record));
@@ -7264,6 +7383,8 @@ function roleLabel(role: TranscriptEntry["role"], language: UILanguage = "en"): 
   switch (role) {
     case "assistant":
       return textFor(language, "roleCodex");
+    case "artifact":
+      return textFor(language, "image");
     case "user":
       return textFor(language, "roleYou");
     case "system":
@@ -7349,7 +7470,7 @@ function timelineEntryFromRawNotification(
   const itemType = stringOrUndefined(item.type) ?? stringOrUndefined(params.type);
   const itemId = stringOrUndefined(item.id) ?? stringOrUndefined(params.itemId) ?? method;
 
-  if (method === "item/started" && itemType) {
+  if ((method === "item/started" || (method === "item/completed" && itemType === "imageGeneration")) && itemType) {
     if (
       itemType === "agentMessage" ||
       itemType === "userMessage" ||

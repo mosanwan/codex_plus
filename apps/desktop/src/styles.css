@@ -1901,6 +1901,51 @@ textarea:focus-visible {
   padding: 0 0 18px;
 }
 
+.activityGroup {
+  width: min(900px, 100%);
+  padding: 0 0 var(--space-sm);
+}
+
+.activityGroup > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: fit-content;
+  min-height: 28px;
+  border-radius: var(--radius-xs);
+  padding: 4px var(--space-xs) 4px 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  list-style: none;
+  cursor: pointer;
+}
+
+.activityGroup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.activityGroup > summary > svg {
+  flex: 0 0 17px;
+}
+
+.activityGroup > summary:hover {
+  color: var(--color-ink);
+}
+
+.activityGroup > summary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.activityGroup[open] > summary > svg {
+  transform: rotate(90deg);
+}
+
+.activityEntries {
+  padding-top: var(--space-sm);
+}
+
 .timelineItem[data-role="user"] {
   align-self: flex-end;
   display: block;
@@ -1975,6 +2020,42 @@ textarea:focus-visible {
   min-width: 0;
 }
 
+.imageArtifact {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-xs);
+}
+
+.imageArtifact img {
+  display: block;
+  max-width: 100%;
+  max-height: 640px;
+  height: auto;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+.filePreviewImage {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: auto;
+  object-fit: contain;
+}
+
+.artifactFilePath {
+  max-width: 100%;
+  border: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--color-focus);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+}
+
 .timelineMeta {
   display: flex;
   align-items: center;
@@ -2013,6 +2094,42 @@ textarea:focus-visible {
 
 .markdownContent > :first-child {
   margin-top: 0;
+}
+
+.markdownTableScroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: var(--space-sm) 0;
+}
+
+.markdownTableScroll table {
+  width: max-content;
+  min-width: min(100%, 360px);
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.markdownTableScroll th,
+.markdownTableScroll td {
+  min-width: 72px;
+  max-width: 360px;
+  border: 1px solid var(--color-hairline);
+  padding: var(--space-xs) var(--space-sm);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.markdownTableScroll th {
+  color: var(--color-ink);
+  background: var(--color-surface-soft);
+  font-weight: 600;
+}
+
+.markdownTableScroll:focus-visible {
+  outline: 2px solid var(--color-info-border);
+  outline-offset: 2px;
 }
 
 .markdownContent > :last-child {

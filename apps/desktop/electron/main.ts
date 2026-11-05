@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { readArtifactPreview, resolveArtifactPath } from "./file-artifacts.js";
 import {
   CodexAdapter,
   type CodexAdapterEvent,
@@ -160,6 +161,8 @@ interface WorkspaceFilePreview {
   content: string;
   size: number;
   truncated: boolean;
+  mimeType?: string;
+  dataUrl?: string;
 }
 
 interface NotificationSoundFile {
@@ -655,9 +658,14 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(
     "workspace:file:preview",
-    async (_event, options: { cwd: string; path: string; maxBytes?: number }) =>
+    async (_event, options: { cwd: string; path: string; maxBytes?: number; original?: boolean }) =>
       previewWorkspaceFile(options)
   );
+  ipcMain.handle("workspace:file:open", async (_event, options: { cwd: string; path: string }) => {
+    const target = await resolveArtifactPath(path.resolve(options.cwd), options.path, generatedImagesRoot());
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+  });
   ipcMain.handle(
     "composer:skills:search",
     async (_event, options: { cwd?: string; query?: string; limit?: number; forceReload?: boolean } = {}) =>
@@ -2142,57 +2150,13 @@ async function previewWorkspaceFile(options: {
   cwd: string;
   path: string;
   maxBytes?: number;
+  original?: boolean;
 }): Promise<WorkspaceFilePreview> {
-  const cwd = path.resolve(options.cwd);
-  const requestedPath = String(options.path ?? "").trim();
-  if (!requestedPath) {
-    throw new Error("Missing file path.");
-  }
+  return readArtifactPreview(path.resolve(options.cwd), options.path, generatedImagesRoot(), options.maxBytes, options.original);
+}
 
-  const targetPath = path.isAbsolute(requestedPath)
-    ? path.resolve(requestedPath)
-    : path.resolve(cwd, requestedPath);
-  const relativePath = path.relative(cwd, targetPath);
-  if (
-    relativePath === "" ||
-    relativePath.startsWith("..") ||
-    path.isAbsolute(relativePath)
-  ) {
-    throw new Error("File preview is limited to the selected workspace.");
-  }
-
-  const fileStat = await stat(targetPath);
-  if (!fileStat.isFile()) {
-    throw new Error("Only regular files can be previewed.");
-  }
-
-  const maxBytes = Math.min(
-    Math.max(Number(options.maxBytes) || 120000, 4096),
-    240000
-  );
-  const bytesToRead = Math.min(fileStat.size, maxBytes);
-  const buffer = Buffer.alloc(bytesToRead);
-  const file = await openFile(targetPath, "r");
-  let bytesRead = 0;
-  try {
-    const result = await file.read(buffer, 0, bytesToRead, 0);
-    bytesRead = result.bytesRead;
-  } finally {
-    await file.close();
-  }
-
-  if (buffer.subarray(0, bytesRead).includes(0)) {
-    throw new Error("Binary files cannot be previewed.");
-  }
-
-  return {
-    path: targetPath,
-    relativePath: toPosixPath(relativePath),
-    name: path.basename(targetPath),
-    content: buffer.subarray(0, bytesRead).toString("utf8"),
-    size: fileStat.size,
-    truncated: fileStat.size > bytesRead
-  };
+function generatedImagesRoot(): string {
+  return path.join(initializeResponse?.codexHome ?? path.join(homedir(), ".codex"), "generated_images");
 }
 
 async function searchCodexSkills(options: {

@@ -51,6 +51,8 @@ export interface WorkspaceFilePreview {
   content: string;
   size: number;
   truncated: boolean;
+  mimeType?: string;
+  dataUrl?: string;
 }
 
 export interface NotificationSoundFile {
@@ -146,7 +148,9 @@ declare global {
         cwd: string;
         path: string;
         maxBytes?: number;
+        original?: boolean;
       }): Promise<WorkspaceFilePreview>;
+      openWorkspaceFile(options: { cwd: string; path: string }): Promise<void>;
       searchSkills(options?: {
         cwd?: string;
         query?: string;

@@ -1,11 +1,15 @@
 package app.codep.mobile
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.FileProvider
+import kotlinx.coroutines.Dispatchers
+import java.io.File
 import app.codep.mobile.data.AppPreferences
 import app.codep.mobile.data.AppSettings
 import app.codep.mobile.data.AppLanguage
@@ -38,6 +42,8 @@ import app.codep.mobile.data.progressIsWorking
 import app.codep.mobile.data.progressMessage
 import app.codep.mobile.data.progressSessionId
 import app.codep.mobile.data.normalizeRelayEndpoint
+import app.codep.mobile.data.normalizeArtifactPath
+import app.codep.mobile.data.normalizePreviewHref
 import app.codep.mobile.data.parseRelayEnvelope
 import app.codep.mobile.data.presenceFromPayload
 import app.codep.mobile.data.snapshotFromEvent
@@ -58,8 +64,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
-import java.net.URI
-import java.net.URLDecoder
 import java.util.UUID
 import kotlin.math.min
 
@@ -133,7 +137,9 @@ data class WorkspaceFilePreview(
     val name: String,
     val content: String,
     val size: Long,
-    val truncated: Boolean
+    val truncated: Boolean,
+    val mimeType: String = "",
+    val dataUrl: String = ""
 )
 
 data class FilePreviewDialog(
@@ -540,12 +546,33 @@ class MobileViewModel(application: Application) : AndroidViewModel(application) 
                 put("workspace", workspace)
                 put("path", requestedPath)
                 put("maxBytes", 120_000)
+                put("original", true)
             }
         )
     }
 
     fun closeFilePreview() {
         _state.update { it.copy(filePreviewDialog = null) }
+    }
+
+    fun openPreviewFile(preview: WorkspaceFilePreview) {
+        if (preview.dataUrl.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val context = getApplication<Application>()
+                val directory = File(context.cacheDir, "artifact-previews").apply { mkdirs() }
+                val name = preview.name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "file" }
+                val file = File(directory, "${UUID.randomUUID()}-$name")
+                file.writeBytes(Base64.decode(preview.dataUrl.substringAfter(','), Base64.DEFAULT))
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+                context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, preview.mimeType.ifBlank { "application/octet-stream" })
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                })
+            }.onFailure { error ->
+                _state.update { current -> current.copy(filePreviewDialog = current.filePreviewDialog?.copy(error = error.message ?: "Could not open file.")) }
+            }
+        }
     }
 
     fun openSession(sessionId: String) {
@@ -1116,18 +1143,16 @@ private fun filePreviewFromPayload(value: kotlinx.serialization.json.JsonElement
         name = name,
         content = (root["content"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
         size = (root["size"] as? JsonPrimitive)?.longOrNull ?: 0L,
-        truncated = (root["truncated"] as? JsonPrimitive)?.contentOrNull == "true"
+        truncated = (root["truncated"] as? JsonPrimitive)?.contentOrNull == "true",
+        mimeType = (root["mimeType"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        dataUrl = (root["dataUrl"] as? JsonPrimitive)?.contentOrNull.orEmpty()
     )
 }
 
 private fun normalizePreviewPath(value: String): String {
-    val trimmed = value.substringBefore('#').substringBefore('?').trim()
-    if (trimmed.startsWith("file://", ignoreCase = true)) {
-        return runCatching { URI(trimmed).path.orEmpty() }.getOrDefault("")
-    }
-    return runCatching { URLDecoder.decode(trimmed, Charsets.UTF_8.name()) }
-        .getOrDefault(trimmed)
-        .trim()
+    val path = normalizeArtifactPath(value)
+    if (Regex("""^[a-zA-Z]:[\\/]""").containsMatchIn(path) || path.startsWith("\\\\")) return path
+    return normalizePreviewHref(value)
 }
 
 private fun defaultModelOptions(): List<ModelOption> {

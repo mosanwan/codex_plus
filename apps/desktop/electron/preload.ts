@@ -79,8 +79,10 @@ contextBridge.exposeInMainWorld("codexApp", {
   revealDownloadedUpdate: (path: string) => ipcRenderer.invoke("app:update:reveal-download", path),
   searchWorkspaceFiles: (options: { cwd: string; query?: string; limit?: number }) =>
     ipcRenderer.invoke("composer:files:search", options),
-  previewWorkspaceFile: (options: { cwd: string; path: string; maxBytes?: number }) =>
+  previewWorkspaceFile: (options: { cwd: string; path: string; maxBytes?: number; original?: boolean }) =>
     ipcRenderer.invoke("workspace:file:preview", options),
+  openWorkspaceFile: (options: { cwd: string; path: string }) =>
+    ipcRenderer.invoke("workspace:file:open", options),
   searchSkills: (options?: { cwd?: string; query?: string; limit?: number; forceReload?: boolean }) =>
     ipcRenderer.invoke("composer:skills:search", options ?? {}),
   saveRemoteAttachments: (attachments: RemoteAttachmentInput[]) =>

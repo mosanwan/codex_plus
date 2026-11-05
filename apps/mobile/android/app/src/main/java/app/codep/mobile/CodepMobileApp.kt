@@ -1,6 +1,9 @@
 package app.codep.mobile
 
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +25,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -89,6 +94,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -99,9 +107,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -110,6 +123,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.TextUnit
@@ -118,6 +132,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.yield
 import java.text.SimpleDateFormat
@@ -131,6 +147,8 @@ import app.codep.mobile.data.ComposerCompletion
 import app.codep.mobile.data.ComposerCompletionMode
 import app.codep.mobile.data.ComposerSuggestion
 import app.codep.mobile.data.Message
+import app.codep.mobile.data.renderFileCitations
+import app.codep.mobile.data.normalizePreviewHref
 import app.codep.mobile.data.MessageAttachment
 import app.codep.mobile.data.MobileTab
 import app.codep.mobile.data.ModelOption
@@ -482,6 +500,7 @@ fun CodepMobileApp(viewModel: MobileViewModel) {
             FilePreviewDialogView(
                 dialog = dialog,
                 onPreviewFile = viewModel::requestFilePreview,
+                onOpenFile = viewModel::openPreviewFile,
                 onClose = viewModel::closeFilePreview
             )
         }
@@ -561,6 +580,7 @@ private fun VersionMismatchDialog(
 private fun FilePreviewDialogView(
     dialog: FilePreviewDialog,
     onPreviewFile: (String, String) -> Unit,
+    onOpenFile: (WorkspaceFilePreview) -> Unit,
     onClose: () -> Unit
 ) {
     Dialog(
@@ -624,14 +644,46 @@ private fun FilePreviewDialogView(
             when {
                 dialog.loading -> PreviewStatusText(if (IsChinese) "正在加载预览..." else "Loading preview...")
                 dialog.error != null -> PreviewStatusText(dialog.error)
+                dialog.preview?.mimeType?.startsWith("image/") == true -> LoadedImagePreview(dialog.preview)
+                dialog.preview?.dataUrl?.isNotBlank() == true && dialog.preview.content.isBlank() -> PreviewStatusText(
+                    if (IsChinese) "文件已加载，可用手机应用打开。" else "File loaded. Open it with an app on your phone."
+                )
                 dialog.preview?.isMarkdown == true -> MarkdownFilePreview(
                     content = dialog.preview.content,
                     onPreviewFile = onPreviewFile
                 )
                 else -> SourceFilePreview(content = dialog.preview?.content.orEmpty())
             }
+            if (dialog.preview?.dataUrl?.isNotBlank() == true) {
+                TextButton(onClick = { onOpenFile(dialog.preview) }) {
+                    Text(if (IsChinese) "用手机应用打开" else "Open with an app", color = Ink)
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun LoadedImagePreview(preview: WorkspaceFilePreview) {
+    var failed by remember(preview.dataUrl) { mutableStateOf(false) }
+    val bitmap by produceState<android.graphics.Bitmap?>(null, preview.dataUrl) {
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                val bytes = Base64.decode(preview.dataUrl.substringAfter(','), Base64.DEFAULT)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+                while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > 2048) options.inSampleSize *= 2
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            }.getOrNull()
+        }
+        failed = value == null
+    }
+    bitmap?.let { image ->
+        Image(image.asImageBitmap(), preview.name, modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp), contentScale = ContentScale.Fit)
+    } ?: PreviewStatusText(if (failed) {
+        if (IsChinese) "无法显示此图片，可以用手机应用打开。" else "Could not display this image. Open it with an app."
+    } else if (IsChinese) "正在显示图片…" else "Displaying image…")
 }
 
 @Composable
@@ -930,7 +982,7 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
     }
     var visibleMessageCount by remember(state.activeSessionId) { mutableStateOf(InitialVisibleMessageCount) }
     var pendingHistoryOffset by remember { mutableStateOf(0) }
-    var pendingHistoryAnchor by remember { mutableStateOf(0) }
+    var pendingHistoryAnchor by remember { mutableStateOf<String?>(null) }
     var pendingHistoryAnchorOffset by remember { mutableStateOf(0) }
     var autoScrollEnabled by remember(state.activeSessionId) { mutableStateOf(true) }
     val visibleLimit = min(displayMessages.size, MaxRenderedMessageCount)
@@ -940,6 +992,7 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
     val visibleMessages = remember(displayMessages, hiddenMessageCount) {
         displayMessages.drop(hiddenMessageCount)
     }
+    val visibleBlocks = remember(visibleMessages) { groupChatActivity(visibleMessages) }
     val latestMessageRenderKey = displayMessages.lastOrNull()?.let { message ->
         "${message.id}:${message.text.length}:${message.attachments.size}:${state.isWorking}"
     }.orEmpty()
@@ -962,7 +1015,7 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
             val itemCount =
                 (if (hiddenMessageCount > 0) 1 else 0) +
                     (if (displayMessages.isEmpty()) 1 else 0) +
-                    visibleMessages.size +
+                    visibleBlocks.size +
                     (if (state.diffLines.isNotEmpty()) 1 else 0)
             scrollChatToBottom(listState, itemCount)
         }
@@ -972,7 +1025,8 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
         if (pendingHistoryOffset > 0) {
             yield()
             listState.scrollToItem(
-                (pendingHistoryAnchor + pendingHistoryOffset).coerceAtLeast(0),
+                (visibleBlocks.indexOfFirst { it.id == pendingHistoryAnchor }.coerceAtLeast(0) +
+                    if (hiddenMessageCount > 0) 1 else 0),
                 pendingHistoryAnchorOffset
             )
             pendingHistoryOffset = 0
@@ -1005,7 +1059,9 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
                         onLoadOlder = {
                             val addCount = min(MessagePageSize, loadableHiddenCount)
                             if (addCount <= 0) return@HistoryLoader
-                            pendingHistoryAnchor = listState.firstVisibleItemIndex
+                            val anchorIndex = (listState.firstVisibleItemIndex -
+                                if (hiddenMessageCount > 0) 1 else 0).coerceAtLeast(0)
+                            pendingHistoryAnchor = visibleBlocks.getOrNull(anchorIndex)?.id
                             pendingHistoryAnchorOffset = listState.firstVisibleItemScrollOffset
                             pendingHistoryOffset = addCount
                             visibleMessageCount = min(visibleMessageCount + addCount, visibleLimit)
@@ -1021,15 +1077,33 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
                     )
                 }
             }
-            items(visibleMessages, key = { it.id }) { message ->
-                MessageBubble(
-                    message = message,
-                    onPreviewFile = viewModel::requestFilePreview
-                )
+            items(visibleBlocks, key = { "${state.activeSessionId}:${it.id}" }) { block ->
+                if (block.isActivity) {
+                    ExecutionDetails(
+                        label = if (IsChinese) "执行过程 · ${block.messages.size} 项" else "Execution details · ${block.messages.size} items",
+                        resetKey = "${state.activeSessionId}:${block.id}"
+                    ) {
+                        block.messages.forEach { message ->
+                            key(message.id) {
+                                MessageBubble(message, onPreviewFile = viewModel::requestFilePreview)
+                            }
+                        }
+                    }
+                } else {
+                    MessageBubble(
+                        message = block.messages.first(),
+                        onPreviewFile = viewModel::requestFilePreview
+                    )
+                }
             }
             if (state.diffLines.isNotEmpty()) {
                 item(key = "diff-preview") {
-                    DiffPreview(lines = state.diffLines.take(80))
+                    ExecutionDetails(
+                        label = if (IsChinese) "文件改动" else "File changes",
+                        resetKey = "${state.activeSessionId}:diff-preview"
+                    ) {
+                        DiffPreview(lines = state.diffLines.take(80))
+                    }
                 }
             }
         }
@@ -1049,6 +1123,39 @@ private fun ChatScreen(state: MobileUiState, viewModel: MobileViewModel) {
             onSend = viewModel::sendMessage,
             onInterrupt = viewModel::interruptTurn
         )
+    }
+}
+
+@Composable
+private fun ExecutionDetails(label: String, resetKey: String, content: @Composable () -> Unit) {
+    var expanded by rememberSaveable(resetKey) { mutableStateOf(false) }
+    val expansionState = if (IsChinese) {
+        if (expanded) "已展开" else "已收起"
+    } else {
+        if (expanded) "Expanded" else "Collapsed"
+    }
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .semantics { stateDescription = expansionState }
+                .clickable(role = Role.Button) { expanded = !expanded }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = null,
+                tint = Muted,
+                modifier = Modifier.size(16.dp).graphicsLayer(rotationZ = if (expanded) 90f else 0f)
+            )
+            Text(label, color = Muted, fontSize = 12.sp)
+        }
+        if (expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { content() }
+        }
     }
 }
 
@@ -1177,7 +1284,9 @@ private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> U
             }
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MarkdownContent(
+                    if (message.role == "artifact") {
+                        Text(message.text, color = Body, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    } else MarkdownContent(
                         text = message.text.ifBlank { "(attachment)" },
                         userMessage = isUser,
                         eventMessage = isEvent,
@@ -1186,7 +1295,8 @@ private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> U
                     if (message.attachments.isNotEmpty()) {
                         MessageAttachmentList(
                             attachments = message.attachments,
-                            userMessage = isUser
+                            userMessage = isUser,
+                            onPreviewFile = onPreviewFile
                         )
                     }
                 }
@@ -1196,9 +1306,18 @@ private fun MessageBubble(message: Message, onPreviewFile: (String, String) -> U
 }
 
 @Composable
-private fun MessageAttachmentList(attachments: List<MessageAttachment>, userMessage: Boolean) {
+private fun MessageAttachmentList(attachments: List<MessageAttachment>, userMessage: Boolean, onPreviewFile: (String, String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         attachments.forEach { attachment ->
+            if (!userMessage && attachment.path.isNotBlank()) {
+                OutlinedButton(onClick = { onPreviewFile(attachment.path, attachment.name) }, shape = RadiusSmall) {
+                    Text(
+                        (if (IsChinese) { if (attachment.kind == "image") "加载图片 · " else "加载文件 · " }
+                         else { if (attachment.kind == "image") "Load image · " else "Load file · " }) + attachment.name,
+                        color = Ink, fontSize = 12.sp
+                    )
+                }
+            } else {
             Text(
                 text = attachment.name.ifBlank { "attachment" },
                 color = if (userMessage) Canvas.copy(alpha = 0.76f) else Muted,
@@ -1206,6 +1325,7 @@ private fun MessageAttachmentList(attachments: List<MessageAttachment>, userMess
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            }
         }
     }
 }
@@ -1217,11 +1337,12 @@ private fun MarkdownContent(
     eventMessage: Boolean,
     onPreviewFile: (String, String) -> Unit
 ) {
-    val blocks = remember(text) { parseMarkdownBlocks(text) }
+    val blocks = remember(text) { parseMarkdownBlocks(renderFileCitations(text)) }
     val textColor = if (userMessage) Canvas else Body
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
+                is MarkdownBlock.Table -> MarkdownTable(block, userMessage, onPreviewFile)
                 is MarkdownBlock.Heading -> InlineMarkdownText(
                     text = block.text,
                     textColor = textColor,
@@ -1314,6 +1435,7 @@ private fun InlineMarkdownText(
     modifier: Modifier = Modifier,
     fontWeight: FontWeight? = null,
     fontFamily: FontFamily? = null,
+    textAlign: TextAlign? = null,
     onPreviewFile: (String, String) -> Unit
 ) {
     val previewLink = remember(text) { previewLinkFromMarkdown(text) }
@@ -1324,6 +1446,7 @@ private fun InlineMarkdownText(
         lineHeight = lineHeight,
         fontWeight = fontWeight,
         fontFamily = fontFamily,
+        textAlign = textAlign,
         textDecoration = if (previewLink != null) TextDecoration.Underline else null,
         modifier = if (previewLink != null) {
             modifier.clickable { onPreviewFile(previewLink.path, previewLink.label) }
@@ -1331,6 +1454,45 @@ private fun InlineMarkdownText(
             modifier
         }
     )
+}
+
+@Composable
+private fun MarkdownTable(table: MarkdownBlock.Table, userMessage: Boolean, onPreviewFile: (String, String) -> Unit) {
+    val border = if (userMessage) Canvas.copy(alpha = 0.3f) else Hairline
+    val widths = remember(table) {
+        table.headers.indices.map { column ->
+            val length = (listOf(table.headers) + table.rows).maxOf { row ->
+                row.getOrElse(column) { "" }.fold(0) { length, char -> length + if (char.code > 255) 2 else 1 }
+            }
+            (length * 7 + 24).coerceIn(96, 240).dp
+        }
+    }
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Column {
+            (listOf(table.headers) + table.rows).forEachIndexed { rowIndex, cells ->
+                Row(Modifier.height(IntrinsicSize.Min)) {
+                    cells.forEachIndexed { column, cell ->
+                        Box(Modifier.width(widths[column]).fillMaxHeight()
+                            .background(if (rowIndex == 0) { if (userMessage) Primary.copy(alpha = 0.7f) else SurfaceSoft } else Color.Transparent)
+                            .border(0.5.dp, border).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            InlineMarkdownText(
+                                text = cell, textColor = if (userMessage) Canvas else Body,
+                                fontSize = 14.sp, lineHeight = 20.sp,
+                                modifier = Modifier.fillMaxWidth(),
+                                fontWeight = if (rowIndex == 0) FontWeight.Medium else FontWeight.Normal,
+                                textAlign = when (table.alignments[column]) {
+                                    TableAlignment.Left -> TextAlign.Start
+                                    TableAlignment.Center -> TextAlign.Center
+                                    TableAlignment.Right -> TextAlign.End
+                                },
+                                onPreviewFile = onPreviewFile
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1351,91 +1513,6 @@ private fun QuoteBlock(
             .padding(8.dp),
         onPreviewFile = onPreviewFile
     )
-}
-
-private sealed class MarkdownBlock {
-    data class Heading(val level: Int, val text: String) : MarkdownBlock()
-    data class Paragraph(val text: String) : MarkdownBlock()
-    data class ListItems(val ordered: Boolean, val items: List<String>) : MarkdownBlock()
-    data class Code(val language: String, val code: String) : MarkdownBlock()
-    data class Quote(val text: String) : MarkdownBlock()
-}
-
-private fun parseMarkdownBlocks(text: String): List<MarkdownBlock> {
-    val lines = text.replace("\r\n", "\n").lines()
-    val blocks = mutableListOf<MarkdownBlock>()
-    var index = 0
-    while (index < lines.size) {
-        val line = lines[index]
-        if (line.isBlank()) {
-            index += 1
-            continue
-        }
-        if (line.trimStart().startsWith("```")) {
-            val fence = line.trimStart()
-            val language = fence.removePrefix("```").trim()
-            val codeLines = mutableListOf<String>()
-            index += 1
-            while (index < lines.size && !lines[index].trimStart().startsWith("```")) {
-                codeLines += lines[index]
-                index += 1
-            }
-            if (index < lines.size) index += 1
-            blocks += MarkdownBlock.Code(language = language, code = codeLines.joinToString("\n"))
-            continue
-        }
-        val heading = Regex("""^(#{1,6})\s+(.+)$""").find(line)
-        if (heading != null) {
-            blocks += MarkdownBlock.Heading(
-                level = heading.groupValues[1].length,
-                text = heading.groupValues[2].trim()
-            )
-            index += 1
-            continue
-        }
-        if (line.trimStart().startsWith(">")) {
-            val quoteLines = mutableListOf<String>()
-            while (index < lines.size && lines[index].trimStart().startsWith(">")) {
-                quoteLines += lines[index].trimStart().removePrefix(">").trimStart()
-                index += 1
-            }
-            blocks += MarkdownBlock.Quote(quoteLines.joinToString("\n"))
-            continue
-        }
-        val unordered = Regex("""^\s*[-*]\s+(.+)$""")
-        val ordered = Regex("""^\s*\d+\.\s+(.+)$""")
-        val unorderedMatch = unordered.find(line)
-        val orderedMatch = ordered.find(line)
-        if (unorderedMatch != null || orderedMatch != null) {
-            val isOrdered = orderedMatch != null
-            val matcher = if (isOrdered) ordered else unordered
-            val items = mutableListOf<String>()
-            while (index < lines.size) {
-                val match = matcher.find(lines[index]) ?: break
-                items += match.groupValues[1].trim()
-                index += 1
-            }
-            blocks += MarkdownBlock.ListItems(isOrdered, items)
-            continue
-        }
-        val paragraphLines = mutableListOf(line.trim())
-        index += 1
-        while (index < lines.size && lines[index].isNotBlank() && !startsMarkdownBlock(lines[index])) {
-            paragraphLines += lines[index].trim()
-            index += 1
-        }
-        blocks += MarkdownBlock.Paragraph(paragraphLines.joinToString(" "))
-    }
-    return blocks.ifEmpty { listOf(MarkdownBlock.Paragraph(text)) }
-}
-
-private fun startsMarkdownBlock(line: String): Boolean {
-    val trimmed = line.trimStart()
-    return trimmed.startsWith("```") ||
-        Regex("""^#{1,6}\s+""").containsMatchIn(trimmed) ||
-        trimmed.startsWith(">") ||
-        Regex("""^[-*]\s+""").containsMatchIn(trimmed) ||
-        Regex("""^\d+\.\s+""").containsMatchIn(trimmed)
 }
 
 @Composable
@@ -1479,19 +1556,6 @@ private fun previewLinkFromMarkdown(text: String): PreviewLink? {
     val path = normalizePreviewHref(match.groupValues[2])
     if (label.isBlank() || path.isBlank()) return null
     return PreviewLink(label = label, path = path, displayText = text.replace(match.value, label))
-}
-
-private fun normalizePreviewHref(value: String): String {
-    val trimmed = value.substringBefore('#').substringBefore('?').trim()
-    if (trimmed.startsWith("file://", ignoreCase = true)) {
-        return runCatching { java.net.URI(trimmed).path.orEmpty() }.getOrDefault("")
-    }
-    if (Regex("""^[a-z][a-z0-9+.-]*:""", RegexOption.IGNORE_CASE).containsMatchIn(trimmed)) {
-        return ""
-    }
-    return runCatching { java.net.URLDecoder.decode(trimmed, Charsets.UTF_8.name()) }
-        .getOrDefault(trimmed)
-        .trim()
 }
 
 private fun formatBytes(value: Long): String {

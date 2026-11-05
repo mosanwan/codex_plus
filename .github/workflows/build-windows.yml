@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate desktop
+        run: |
+          npm run build -w @codep/codex-adapter
+          npm run typecheck -w @codep/desktop
+          node --import tsx --test apps/desktop/tests/artifacts.test.ts apps/desktop/tests/file-artifacts.test.ts
+
       - name: Build Windows package
         run: npm run package:desktop:win -- --x64
 
