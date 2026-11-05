@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, truncate, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, truncate, rm, realpath } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -21,13 +21,13 @@ test("on-demand previews read generated images and preserve original file bytes"
     const preview = await readArtifactPreview(workspace, image, generated);
     assert.equal(preview.mimeType, "image/png");
     assert.deepEqual(Buffer.from(preview.dataUrl!.split(",")[1], "base64"), bytes);
-    assert.equal(await resolveArtifactPath(workspace, pathToFileURL(image).href, generated), image);
+    assert.equal(await resolveArtifactPath(workspace, pathToFileURL(image).href, generated), await realpath(image));
     if (process.platform === "win32") {
       // This is the Markdown destination emitted in the user's failing reply.
       const textPath = path.join(workspace, "测试文本.txt");
       await writeFile(textPath, "中文 UTF-8 text 123");
       const markdownPath = "/" + textPath.replace(/\\/g, "/");
-      assert.equal(await resolveArtifactPath(workspace, markdownPath, generated), textPath);
+      assert.equal(await resolveArtifactPath(workspace, markdownPath, generated), await realpath(textPath));
       const loaded = await readArtifactPreview(workspace, markdownPath, generated, undefined, true);
       assert.equal(loaded.content, "中文 UTF-8 text 123");
       assert.equal(Buffer.from(loaded.dataUrl!.split(",")[1], "base64").toString(), loaded.content);

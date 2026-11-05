@@ -49,6 +49,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
             release/*_macos_${{ matrix.arch }}.dmg
             release/*_macos_${{ matrix.arch }}.app.zip
